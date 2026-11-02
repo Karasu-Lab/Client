@@ -400,7 +400,7 @@ fn read_texture_metadata(metadata_path: Option<&Path>) -> Option<TextureMetadata
     let Some(metadata_path) = metadata_path else {
         return Some(TextureMetadataFile::default());
     };
-    let json = std::fs::read_to_string(metadata_path).ok()?;
+    let json = pomme_vfs::read_to_string(metadata_path).ok()?;
     serde_json::from_str(&json).ok()
 }
 
@@ -593,7 +593,7 @@ fn resolve_texture_resource(
         })
         .or_else(|| {
             let path = jar_assets_dir.join(&metadata_key);
-            path.exists().then_some(path)
+            pomme_vfs::exists(&path).then_some(path)
         });
     (path, metadata)
 }
@@ -2122,8 +2122,8 @@ mod tests {
         let instance = root.join("instance");
         let base_dir = jar_assets.join("minecraft/textures/item");
         let pack_dir = instance.join("resourcepacks/test_pack/assets/minecraft/textures/item");
-        std::fs::create_dir_all(&base_dir).unwrap();
-        std::fs::create_dir_all(&pack_dir).unwrap();
+        pomme_vfs::create_dir_all(&base_dir).unwrap();
+        pomme_vfs::create_dir_all(&pack_dir).unwrap();
         std::fs::write(
             instance.join("resourcepacks/test_pack/pack.mcmeta"),
             r#"{"pack":{"pack_format":84,"description":"test"}}"#,

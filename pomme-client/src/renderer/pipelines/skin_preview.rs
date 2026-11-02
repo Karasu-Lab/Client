@@ -75,7 +75,7 @@ pub struct SkinPreviewPipeline {
     arm_mvp_sets: Vec<rhi::backend::BindGroup>,
     arm_mvp_buffers: Vec<rhi::backend::Buffer>,
     armor_meshes: [PreviewArmorMesh; 4],
-    swing_start: Option<std::time::Instant>,
+    swing_start: Option<crate::clock::Instant>,
 }
 
 impl SkinPreviewPipeline {
@@ -166,7 +166,7 @@ impl SkinPreviewPipeline {
     }
 
     pub fn trigger_swing(&mut self) {
-        self.swing_start = Some(std::time::Instant::now());
+        self.swing_start = Some(crate::clock::Instant::now());
     }
 
     #[allow(clippy::too_many_arguments)]

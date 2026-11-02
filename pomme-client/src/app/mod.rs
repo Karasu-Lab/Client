@@ -1,39 +1,69 @@
+#[cfg(feature = "game")]
 mod copper_golem;
+#[cfg(feature = "game")]
 pub mod core;
 pub mod input;
+#[cfg(feature = "game")]
 mod install;
+#[cfg(feature = "game")]
 pub mod level_load;
+#[cfg(feature = "game")]
 pub mod phases;
+#[cfg(feature = "game")]
 mod sniffer;
 pub mod state_slot;
 
+#[cfg(feature = "game")]
 use std::mem::ManuallyDrop;
+#[cfg(feature = "game")]
 use std::rc::Rc;
+#[cfg(feature = "game")]
 use std::sync::Arc;
+#[cfg(feature = "game")]
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "game")]
 use thiserror::Error;
+#[cfg(feature = "game")]
 use winit::application::ApplicationHandler;
+#[cfg(feature = "game")]
 use winit::event::{DeviceEvent, DeviceId, WindowEvent};
+#[cfg(feature = "game")]
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+#[cfg(feature = "game")]
 use winit::window::{Window, WindowId};
 
+#[cfg(feature = "game")]
 use crate::app::core::AppCore;
+#[cfg(feature = "game")]
 use crate::app::input::Action;
+#[cfg(feature = "game")]
 use crate::app::input::touch::TouchLayout;
+#[cfg(feature = "game")]
 use crate::app::phases::connecting::{ConnectingUpdateResult, update_connecting};
+#[cfg(feature = "game")]
 use crate::app::phases::in_game::{GameState, GameUpdateResult, start_chunk_load, update_game};
+#[cfg(feature = "game")]
 use crate::app::phases::in_menu::{self, MenuUpdateResult, update_menu};
+#[cfg(feature = "game")]
 use crate::app::phases::saving::update_saving;
+#[cfg(feature = "game")]
 use crate::app::phases::{AfterSaving, AppPhase, ConnectionPhase, FpsCounter, Gfx, Panorama};
+#[cfg(feature = "game")]
 use crate::app::state_slot::StateSlot;
+#[cfg(feature = "game")]
 use crate::dirs::DataDirs;
+#[cfg(feature = "game")]
 use crate::net::connection::{ConnectArgs, ConnectionHandle, spawn_connection};
+#[cfg(feature = "game")]
 use crate::renderer::{self, Renderer};
+#[cfg(feature = "game")]
 use crate::singleplayer::World;
+#[cfg(feature = "game")]
 use crate::user::UserData;
 
 #[derive(Error, Debug)]
+#[cfg(feature = "game")]
 pub enum WindowError {
     #[error("failed to create event loop: {0}")]
     EventLoop(#[from] winit::error::EventLoopError),
@@ -47,9 +77,12 @@ pub enum WindowError {
 
 pub(crate) const TICK_RATE: f32 = 1.0 / 20.0;
 const TICK_RATE_MS: u32 = 1000 / 20;
+#[cfg(feature = "game")]
 const POSITION_SEND_INTERVAL: u32 = 20;
+#[cfg(feature = "game")]
 const POSITION_THRESHOLD_SQ: f64 = 4.0e-8;
 
+#[cfg(feature = "game")]
 pub struct App {
     phase: StateSlot<AppPhase>,
     core: AppCore,
@@ -71,6 +104,7 @@ pub struct App {
 
 /// Where a `--chunk-bench` run is.
 #[derive(Clone, Copy)]
+#[cfg(feature = "game")]
 enum ChunkBenchLaunch {
     /// The render distance to benchmark, until in game.
     Waiting(u32),
@@ -81,12 +115,14 @@ enum ChunkBenchLaunch {
 
 /// Port of vanilla `FramerateLimiter`: paces to a target fps by sleeping most
 /// of the wait (with an adaptive margin for oversleep) then spinning the rest.
+#[cfg(feature = "game")]
 struct FramerateLimiter {
     last_frame: Instant,
     average_overshoot_ns: u64,
     last_limit: u32,
 }
 
+#[cfg(feature = "game")]
 impl FramerateLimiter {
     const MAX_CURRENT_OVERSHOOT_NS: u64 = 25_000_000;
     const MAX_AVERAGE_OVERSHOOT_NS: u64 = 2_000_000;
@@ -142,6 +178,7 @@ impl FramerateLimiter {
 /// task, which closes the pipe on a runtime thread, so the server may see the
 /// cancel first; that is fine, since steel's `save_and_shutdown` disconnects
 /// and persists every player still online before it saves the worlds.
+#[cfg(feature = "game")]
 fn leave_world(
     core: &mut AppCore,
     mut gfx: Gfx,
@@ -170,6 +207,7 @@ fn leave_world(
 
 /// A launch straight into a world (vanilla `--quickPlay*`), skipping the
 /// title screen.
+#[cfg(feature = "game")]
 pub enum QuickPlay {
     Multiplayer(String),
     /// A save folder name.
@@ -178,6 +216,7 @@ pub enum QuickPlay {
 
 /// Connects with `connect_args`; `world` is the integrated server for a
 /// singleplayer launch.
+#[cfg(feature = "game")]
 fn start_connecting(
     core: &mut AppCore,
     gfx: Gfx,
@@ -216,6 +255,7 @@ fn start_connecting(
     }
 }
 
+#[cfg(feature = "game")]
 impl App {
     pub fn new(
         version: String,
@@ -432,6 +472,7 @@ impl App {
 /// The game window, born in the persisted display mode: the swapchain is
 /// sized from `inner_size()` before the window is shown, so switching after
 /// creation would leave it built for the windowed size.
+#[cfg(feature = "game")]
 fn create_window(
     event_loop: &ActiveEventLoop,
     core: &AppCore,
@@ -460,6 +501,7 @@ fn create_window(
     event_loop.create_window(window_attrs).map(Arc::new)
 }
 
+#[cfg(feature = "game")]
 impl ApplicationHandler for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.core.menu.restore_bench_render_distance();

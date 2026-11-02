@@ -2,3 +2,15 @@
 # msvc's link.exe is the slow one, so swap in the toolchain-bundled lld there.
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
+
+# The browser build. `getrandom` picks the JavaScript backend by cfg, and tokio
+# only builds its OS-backed features (azalea-auth asks for `fs`) for wasm under
+# `tokio_unstable`; they report "unsupported" when used.
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "--cfg", "getrandom_backend=\"wasm_js\"",
+    "--cfg", "tokio_unstable",
+    # Shared memory for the Web Worker pool (thread); std is then built
+    # with them too: cargo's `-Zbuild-std=std,panic_abort`.
+    "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
+]

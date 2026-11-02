@@ -8,11 +8,18 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use serde::Deserialize;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 pub mod bedrock;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod client;
 
 const VERSION_MANIFEST_URL: &str =
@@ -23,6 +30,25 @@ const ATTEMPTS: u32 = 3;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// GitHub's API refuses requests without one.
 const USER_AGENT: &str = "pomme";
+
+/// Where an install fetches from. The defaults are Mojang's servers; a browser
+/// build, which those do not serve to other origins, points them at a mirror.
+#[derive(Clone, Debug)]
+pub struct Endpoints {
+    /// The version manifest (`version_manifest_v2.json`).
+    pub version_manifest: String,
+    /// The asset objects, as `<base>/<first two hash digits>/<hash>`.
+    pub resources_base: String,
+}
+
+impl Default for Endpoints {
+    fn default() -> Self {
+        Self {
+            version_manifest: VERSION_MANIFEST_URL.to_owned(),
+            resources_base: RESOURCES_BASE_URL.to_owned(),
+        }
+    }
+}
 
 /// How far an install has got: `done` of `total` steps, with what's happening.
 #[derive(Clone, Debug, Default)]
@@ -102,7 +128,8 @@ fn extracted_marker(versions_dir: &Path, version: &str) -> PathBuf {
 /// marker; older launchers extracted in place and wrote the marker last, so
 /// one without it may be half done.
 pub fn is_installed(assets_dir: &Path, versions_dir: &Path, version: &str) -> bool {
-    index_path(assets_dir, version).exists() && extracted_marker(versions_dir, version).exists()
+    pomme_vfs::exists(&index_path(assets_dir, version))
+        && pomme_vfs::exists(&extracted_marker(versions_dir, version))
 }
 
 /// Downloads whatever of `version` is missing or damaged, reporting through
@@ -115,9 +142,29 @@ pub async fn install(
     version: &str,
     on_progress: &(dyn Fn(Progress) + Send + Sync),
 ) -> Result<(), String> {
+    install_from(
+        http,
+        &Endpoints::default(),
+        assets_dir,
+        versions_dir,
+        version,
+        on_progress,
+    )
+    .await
+}
+
+/// [`install`] from `endpoints`.
+pub async fn install_from(
+    http: &reqwest::Client,
+    endpoints: &Endpoints,
+    assets_dir: &Path,
+    versions_dir: &Path,
+    version: &str,
+    on_progress: &(dyn Fn(Progress) + Send + Sync),
+) -> Result<(), String> {
     let report = reporter(on_progress);
     report(0, 1, "Fetching version info...");
-    let manifest: VersionManifest = get_json(http, VERSION_MANIFEST_URL).await?;
+    let manifest: VersionManifest = get_json(http, &endpoints.version_manifest).await?;
     let entry = manifest
         .versions
         .iter()
@@ -139,7 +186,12 @@ pub async fn install(
         .objects
         .values()
         .map(|obj| Fetch {
-            url: format!("{RESOURCES_BASE_URL}/{}/{}", &obj.hash[..2], obj.hash),
+            url: format!(
+                "{}/{}/{}",
+                endpoints.resources_base,
+                &obj.hash[..2],
+                obj.hash
+            ),
             path: object_path(&objects_dir, &obj.hash),
             size: obj.size,
             expected: obj.hash.clone(),
@@ -151,7 +203,7 @@ pub async fn install(
     write_atomic(&index_path(assets_dir, version), &index_bytes).await?;
 
     let out = extracted_dir(versions_dir, version);
-    if !extracted_marker(versions_dir, version).exists() {
+    if !pomme_vfs::exists(&extracted_marker(versions_dir, version)) {
         report(0, 1, "Downloading the client jar...");
         let client = &version_json.downloads.client;
         let jar = fetch_verified(http, &client.url, &client.sha1, Hash::Sha1).await?;
@@ -165,17 +217,34 @@ pub async fn install(
                 &format!("Extracting the client jar ({done}/{total})"),
             )
         };
-        tokio::task::block_in_place(|| {
-            let _ = std::fs::remove_dir_all(&part);
+        blocking(|| {
+            let _ = pomme_vfs::remove_dir_all(&part);
             extract_assets(&jar, &part, &extract_report)?;
             // Inside the `.part`, so it lands with the files in one rename.
-            std::fs::write(part.join(EXTRACTED_MARKER), version)
+            pomme_vfs::write(&part.join(EXTRACTED_MARKER), version.as_bytes())
                 .map_err(|e| format!("{}: {e}", part.display()))?;
-            let _ = std::fs::remove_dir_all(&out);
-            std::fs::rename(&part, &out).map_err(|e| format!("{}: {e}", out.display()))
+            let _ = pomme_vfs::remove_dir_all(&out);
+            pomme_vfs::rename(&part, &out).map_err(|e| format!("{}: {e}", out.display()))
         })?;
     }
     Ok(())
+}
+
+/// Runs blocking `work`. On a multi-threaded tokio runtime that keeps the
+/// other tasks going; the browser has one thread and nothing to keep going.
+fn blocking<R>(work: impl FnOnce() -> R) -> R {
+    #[cfg(not(target_arch = "wasm32"))]
+    return tokio::task::block_in_place(work);
+    #[cfg(target_arch = "wasm32")]
+    work()
+}
+
+/// Waits `duration`: on tokio's timer natively, on the browser's `setTimeout`.
+async fn sleep(duration: Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(duration).await;
+    #[cfg(target_arch = "wasm32")]
+    gloo_timers::future::sleep(duration).await;
 }
 
 /// How a download's hash is taken: Mojang publishes plain sha1s, while git
@@ -227,7 +296,7 @@ pub(crate) async fn download_all(
 ) -> Result<(), String> {
     let missing: Vec<Fetch> = files
         .into_iter()
-        .filter(|file| !std::fs::metadata(&file.path).is_ok_and(|m| m.len() == file.size))
+        .filter(|file| pomme_vfs::len(&file.path) != Some(file.size))
         .collect();
     let total = missing.len() as u32;
     let total_mb = missing.iter().map(|f| f.size).sum::<u64>() as f64 / 1048576.0;
@@ -236,23 +305,25 @@ pub(crate) async fn download_all(
     let mut done_bytes = 0;
     let mut last_report = Instant::now();
     let mut pending = missing.into_iter();
-    let mut tasks = tokio::task::JoinSet::new();
-    let spawn = |tasks: &mut tokio::task::JoinSet<_>, file: Fetch| {
+    // Polled on this task rather than spawned: the browser's requests are not
+    // `Send`, and the downloads wait on the network, not on this task.
+    let download = |file: Fetch| {
         let http = http.clone();
-        tasks.spawn(async move {
+        async move {
             let bytes = fetch_verified(&http, &file.url, &file.expected, file.hash).await?;
             write_atomic(&file.path, &bytes).await?;
             Ok::<u64, String>(file.size)
-        });
+        }
     };
+    let mut tasks = FuturesUnordered::new();
     for file in pending.by_ref().take(CONCURRENT_DOWNLOADS) {
-        spawn(&mut tasks, file);
+        tasks.push(download(file));
     }
-    while let Some(result) = tasks.join_next().await {
-        done_bytes += result.map_err(|e| e.to_string())??;
+    while let Some(result) = tasks.next().await {
+        done_bytes += result?;
         done += 1;
         if let Some(file) = pending.next() {
-            spawn(&mut tasks, file);
+            tasks.push(download(file));
         }
         if last_report.elapsed() >= PROGRESS_INTERVAL {
             let done_mb = done_bytes as f64 / 1048576.0;
@@ -280,8 +351,12 @@ pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(
 }
 
 pub(crate) async fn get(http: &reqwest::Client, url: &str) -> Result<reqwest::Response, String> {
-    http.get(url)
-        .header(reqwest::header::USER_AGENT, USER_AGENT)
+    let request = http.get(url);
+    // A custom header makes a browser preflight the request, which the asset
+    // servers do not answer.
+    #[cfg(not(target_arch = "wasm32"))]
+    let request = request.header(reqwest::header::USER_AGENT, USER_AGENT);
+    request
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
@@ -319,7 +394,7 @@ where
     let mut last_error = String::new();
     for n in 0..ATTEMPTS {
         if n > 0 {
-            tokio::time::sleep(Duration::from_millis(500 * u64::from(n))).await;
+            sleep(Duration::from_millis(500 * u64::from(n))).await;
         }
         match attempt().await {
             Ok(value) => return Ok(value),
@@ -332,18 +407,13 @@ where
 /// Writes `bytes` beside `path`, then renames it into place.
 pub async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        tokio::fs::create_dir_all(dir)
-            .await
-            .map_err(|e| format!("{}: {e}", dir.display()))?;
+        pomme_vfs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let mut part = path.as_os_str().to_owned();
     part.push(".part");
-    tokio::fs::write(&part, bytes)
-        .await
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    tokio::fs::rename(&part, path)
-        .await
-        .map_err(|e| format!("{}: {e}", path.display()))
+    let part = PathBuf::from(part);
+    pomme_vfs::write(&part, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    pomme_vfs::rename(&part, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Extracts the jar's `assets/` entries into `out`, refusing any entry whose
@@ -365,11 +435,11 @@ fn extract_assets(jar: &[u8], out: &Path, report: &dyn Fn(u32, u32)) -> Result<(
         }
         let path = out.join(name);
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            pomme_vfs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        let mut file =
-            std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        std::io::copy(&mut entry, &mut file).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        std::io::copy(&mut entry, &mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        pomme_vfs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         if last_report.elapsed() >= PROGRESS_INTERVAL {
             report(i as u32 + 1, total);
             last_report = Instant::now();

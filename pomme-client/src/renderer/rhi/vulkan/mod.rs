@@ -986,7 +986,15 @@ pub fn try_create_render_pipeline(
 
 pub type TextureTransition = super::TextureTransition<TextureHandle>;
 
-impl TextureUse {
+/// What the Vulkan backend knows of a [`TextureUse`], which the RHI defines.
+trait TextureUseExt: Sized {
+    fn layout(self) -> vk::ImageLayout;
+    fn is_depth(self) -> bool;
+    fn src(self) -> (vk::AccessFlags, vk::PipelineStageFlags);
+    fn dst(self) -> (vk::AccessFlags, vk::PipelineStageFlags);
+}
+
+impl TextureUseExt for TextureUse {
     fn layout(self) -> vk::ImageLayout {
         match self {
             Self::Undefined => vk::ImageLayout::Undefined,
@@ -1054,7 +1062,12 @@ impl TextureUse {
     }
 }
 
-impl BufferUse {
+/// What the Vulkan backend knows of a [`BufferUse`].
+trait BufferUseExt: Sized {
+    fn masks(self) -> (vk::AccessFlags, vk::PipelineStageFlags);
+}
+
+impl BufferUseExt for BufferUse {
     fn masks(self) -> (vk::AccessFlags, vk::PipelineStageFlags) {
         match self {
             Self::CopySrc => (

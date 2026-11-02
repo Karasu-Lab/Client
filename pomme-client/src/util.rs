@@ -27,7 +27,7 @@ impl JavaRandom {
     /// A time-seeded instance, for vanilla's unseeded `RandomSource.create()`
     /// uses where the exact sequence doesn't matter.
     pub fn from_time() -> Self {
-        let nanos = std::time::SystemTime::now()
+        let nanos = crate::clock::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos() as i64 + d.as_secs() as i64)
             .unwrap_or(0);
@@ -100,8 +100,10 @@ pub fn open_url(url: &str) {
     let opened = open_url_android(url).map_err(|e| e.to_string());
     #[cfg(target_os = "ios")]
     let opened = open_url_ios(url);
-    #[cfg(not(mobile))]
+    #[cfg(all(not(mobile), feature = "game"))]
     let opened = open::that(url).map_err(|e| e.to_string());
+    #[cfg(all(not(mobile), not(feature = "game")))]
+    let opened: Result<(), String> = Err("opening links needs the `game` feature".to_owned());
     if let Err(e) = opened {
         tracing::warn!("Could not open {url:?}: {e}");
     }
@@ -206,7 +208,7 @@ mod tests {
     use crate::test_util::test_temp_dir;
 
     fn entries(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(dir)
+        let mut names: Vec<String> = pomme_vfs::read_dir(dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();

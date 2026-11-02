@@ -141,12 +141,12 @@ fn resolve_panorama_face(
     asset_index: &Option<AssetIndex>,
 ) -> Option<PathBuf> {
     let flat = jar_assets_dir.join(format!("panorama_{i}.png"));
-    if flat.exists() {
+    if pomme_vfs::exists(&flat) {
         return Some(flat);
     }
     let asset_key = format!("minecraft/textures/gui/title/background/panorama_{i}.png");
     let path = resolve_asset_path(jar_assets_dir, asset_index, &asset_key);
-    path.exists().then_some(path)
+    pomme_vfs::exists(&path).then_some(path)
 }
 
 /// All six faces from one source: the flat `panorama_{i}.png` overrides in
@@ -162,7 +162,7 @@ pub fn resolve_panorama_faces(
     };
     collect(&|i| {
         let flat = panorama_dir.join(format!("panorama_{i}.png"));
-        flat.exists().then_some(flat)
+        pomme_vfs::exists(&flat).then_some(flat)
     })
     .or_else(|| collect(&|i| resolve_panorama_face(i, jar_assets_dir, asset_index)))
 }

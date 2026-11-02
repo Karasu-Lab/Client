@@ -2,6 +2,7 @@ use azalea_inventory::components::{CustomName, Damage, ItemName, MaxDamage, Unbr
 use azalea_inventory::{ItemStack, ItemStackData};
 use azalea_registry::tags::items::BUNDLES;
 
+#[cfg(feature = "game")]
 use crate::benchmark::UploadStatus;
 use crate::player::inventory::item_resource_name;
 use crate::renderer::pipelines::menu_overlay::{MenuElement, SpriteId, TooltipLine};
@@ -164,6 +165,7 @@ pub enum ResultAction {
     Recopy,
 }
 
+#[cfg(feature = "game")]
 /// A centered results panel: dimmed backdrop, a large title, a column of detail
 /// lines, an upload status line, and an "upload & copy link" button. Shared by
 /// the benchmark result overlays. Returns what the caller should do based on
@@ -274,10 +276,12 @@ pub(crate) fn get_clipboard() -> String {
     return unsafe { objc2_ui_kit::UIPasteboard::generalPasteboard().string() }
         .map(|text| text.to_string())
         .unwrap_or_default();
-    #[cfg(not(mobile))]
-    arboard::Clipboard::new()
+    #[cfg(all(not(mobile), feature = "game"))]
+    return arboard::Clipboard::new()
         .and_then(|mut cb| cb.get_text())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    #[cfg(all(not(mobile), not(feature = "game")))]
+    String::new()
 }
 
 /// Copy `text` to the system clipboard, returning whether it succeeded.
@@ -294,13 +298,18 @@ pub(crate) fn set_clipboard(text: &str) -> bool {
         unsafe { objc2_ui_kit::UIPasteboard::generalPasteboard().setString(Some(&text)) };
         true
     }
-    #[cfg(not(mobile))]
-    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+    #[cfg(all(not(mobile), feature = "game"))]
+    return match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
         Ok(()) => true,
         Err(err) => {
             tracing::warn!("Failed to set clipboard: {err}");
             false
         }
+    };
+    #[cfg(all(not(mobile), not(feature = "game")))]
+    {
+        let _ = text;
+        false
     }
 }
 

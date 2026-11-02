@@ -1,5 +1,6 @@
 pub mod components;
 pub mod dimensions;
+#[cfg(feature = "game")]
 pub mod glowing;
 pub mod light;
 pub mod shadow;

@@ -45,7 +45,7 @@ impl AssetLookup<'_> {
     }
 
     fn texture_exists(&self, resource: &str) -> bool {
-        self.resolve(&texture_key(resource)).exists()
+        pomme_vfs::exists(self.resolve(&texture_key(resource)))
     }
 
     fn load_texture(&self, resource: &str) -> Option<(Vec<u8>, u32, u32)> {
@@ -92,7 +92,7 @@ impl AssetLookup<'_> {
 
     fn animation_meta(&self, resource: &str) -> Option<AnimationMeta> {
         let path = self.resolve(&format!("{}.mcmeta", texture_key(resource)));
-        let text = std::fs::read_to_string(path).ok()?;
+        let text = pomme_vfs::read_to_string(path).ok()?;
         let value = serde_json::from_str::<Value>(&text).ok()?;
         AnimationMeta::parse(value.get("animation")?)
     }
@@ -287,7 +287,7 @@ pub fn load_atlas_sprite(
 
     let atlas_key = AssetId::parse(atlas).asset_key("atlases", ".json");
     for path in lookup.atlas_definition_stack(&atlas_key) {
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = pomme_vfs::read_to_string(&path) else {
             continue;
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {

@@ -99,7 +99,7 @@ impl ShaderPack {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let overrides = std::fs::read_to_string(path.with_file_name(format!("{name}.txt")))
+        let overrides = pomme_vfs::read_to_string(path.with_file_name(format!("{name}.txt")))
             .map(|text| preprocess::parse_overrides(&text))
             .unwrap_or_default();
         let mut macros = options::macros(&options::discover(&source), &overrides);

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::assets::{AssetIndex, resolve_asset_path};
+use crate::clock::{SystemTime, UNIX_EPOCH};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, packing, rhi, shader, util};
 use crate::ui::font::{FontSources, GLYPH_ATLAS_SIZE, GlyphAtlasPixels, GlyphInfo, GlyphMap};
 use crate::ui::text::{InlineObject, PREFIX_CODE, TextSpan, font_spans};
@@ -2631,7 +2631,7 @@ const BEDROCK_SPRITES: [(SpriteId, &str); 17] = [
 /// The `nineslice_size` from the `.json` Bedrock keeps beside a texture, in
 /// texels. Only the single-number form is read; anything else is unsliced.
 fn bedrock_nine_slice(dir: &Path, stem: &str) -> f32 {
-    std::fs::read(dir.join(format!("{stem}.json")))
+    pomme_vfs::read(dir.join(format!("{stem}.json")))
         .ok()
         .and_then(|json| serde_json::from_slice::<serde_json::Value>(&json).ok())
         .and_then(|meta| meta.get("nineslice_size")?.as_f64())
@@ -5236,7 +5236,7 @@ mod tests {
     #[test]
     fn bedrock_nine_slice_reads_the_number_form_only() {
         let dir = std::env::temp_dir().join(format!("pomme-nine-slice-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        pomme_vfs::create_dir_all(&dir).unwrap();
         for (stem, json) in [
             ("number", r#"{ "nineslice_size": 2, "base_size": [4, 4] }"#),
             ("array", r#"{ "nineslice_size": [1, 2, 1, 2] }"#),

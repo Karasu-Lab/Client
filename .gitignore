@@ -4,3 +4,6 @@
 /logs
 /tools/stategen/out
 /.direnv
+/third_party/vendor/*/target
+/third_party/vendor/*/.cargo-ok
+/third_party/vendor/*/Cargo.toml.orig

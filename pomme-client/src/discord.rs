@@ -1,78 +1,112 @@
-use discord_rich_presence::activity::*;
-use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
+#[cfg(feature = "discord")]
+mod real {
+    use discord_rich_presence::activity::*;
+    use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 
-const DISCORD_CLIENT_ID: &str = "1489624876909330452";
+    const DISCORD_CLIENT_ID: &str = "1489624876909330452";
 
-fn base_activity(version: &str) -> Activity<'static> {
-    Activity::new()
-        .details(format!("Pomme Client — {version}"))
-        .assets(
-            Assets::new()
-                .large_image("green-apple")
-                .large_text("Pomme Client"),
-        )
-}
-
-#[derive(PartialEq)]
-pub enum PresenceState {
-    Loading,
-    InMenu,
-    Multiplayer,
-    Singleplayer,
-}
-
-pub struct DiscordPresence {
-    client: DiscordIpcClient,
-    state: PresenceState,
-}
-
-impl DiscordPresence {
-    pub fn start(version: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        // TODO: connect off the main thread; with Discord running, the
-        // handshake can block startup for tens of seconds.
-        let mut client = DiscordIpcClient::new(DISCORD_CLIENT_ID);
-        client.connect()?;
-        client.set_activity(base_activity(version).state("Starting..."))?;
-
-        Ok(Self {
-            client,
-            state: PresenceState::Loading,
-        })
+    fn base_activity(version: &str) -> Activity<'static> {
+        Activity::new()
+            .details(format!("Pomme Client — {version}"))
+            .assets(
+                Assets::new()
+                    .large_image("green-apple")
+                    .large_text("Pomme Client"),
+            )
     }
 
-    pub fn set_in_menu(&mut self, version: &str) {
-        self.enter(PresenceState::InMenu, version, "In the menu");
+    #[derive(PartialEq)]
+    pub enum PresenceState {
+        Loading,
+        InMenu,
+        Multiplayer,
+        Singleplayer,
     }
 
-    pub fn playing_multiplayer(&mut self, version: &str) {
-        self.enter(PresenceState::Multiplayer, version, "In a server");
+    pub struct DiscordPresence {
+        client: DiscordIpcClient,
+        state: PresenceState,
     }
 
-    pub fn playing_singleplayer(&mut self, version: &str) {
-        self.enter(PresenceState::Singleplayer, version, "In a world");
-    }
+    impl DiscordPresence {
+        pub fn start(version: &str) -> Result<Self, Box<dyn std::error::Error>> {
+            // TODO: connect off the main thread; with Discord running, the
+            // handshake can block startup for tens of seconds.
+            let mut client = DiscordIpcClient::new(DISCORD_CLIENT_ID);
+            client.connect()?;
+            client.set_activity(base_activity(version).state("Starting..."))?;
 
-    /// Re-entering the current state sends nothing.
-    fn enter(&mut self, state: PresenceState, version: &str, text: &str) {
-        if self.state == state {
-            return;
+            Ok(Self {
+                client,
+                state: PresenceState::Loading,
+            })
         }
-        self.state = state;
-        let _ = self.set_activity(base_activity(version).state(text));
-    }
 
-    fn set_activity(&mut self, payload: Activity) -> Result<(), Box<dyn std::error::Error>> {
-        if self.client.set_activity(payload.clone()).is_err() {
-            let _ = self.client.connect();
-            self.client.set_activity(payload)?;
+        pub fn set_in_menu(&mut self, version: &str) {
+            self.enter(PresenceState::InMenu, version, "In the menu");
         }
-        Ok(())
-    }
-}
 
-impl Drop for DiscordPresence {
-    fn drop(&mut self) {
-        let _ = self.client.clear_activity();
-        let _ = self.client.close();
+        pub fn playing_multiplayer(&mut self, version: &str) {
+            self.enter(PresenceState::Multiplayer, version, "In a server");
+        }
+
+        pub fn playing_singleplayer(&mut self, version: &str) {
+            self.enter(PresenceState::Singleplayer, version, "In a world");
+        }
+
+        /// Re-entering the current state sends nothing.
+        fn enter(&mut self, state: PresenceState, version: &str, text: &str) {
+            if self.state == state {
+                return;
+            }
+            self.state = state;
+            let _ = self.set_activity(base_activity(version).state(text));
+        }
+
+        fn set_activity(&mut self, payload: Activity) -> Result<(), Box<dyn std::error::Error>> {
+            if self.client.set_activity(payload.clone()).is_err() {
+                let _ = self.client.connect();
+                self.client.set_activity(payload)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for DiscordPresence {
+        fn drop(&mut self) {
+            let _ = self.client.clear_activity();
+            let _ = self.client.close();
+        }
     }
 }
+#[cfg(feature = "discord")]
+pub use real::*;
+
+#[cfg(not(feature = "discord"))]
+mod stub {
+    #[derive(PartialEq)]
+    pub enum PresenceState {
+        Loading,
+        InMenu,
+        Multiplayer,
+        Singleplayer,
+    }
+
+    /// Builds without the `discord` feature have no presence to report; `start`
+    /// always fails and the client carries on without one.
+    pub struct DiscordPresence;
+
+    impl DiscordPresence {
+        pub fn start(_version: &str) -> Result<Self, Box<dyn std::error::Error>> {
+            Err("built without the `discord` feature".into())
+        }
+
+        pub fn set_in_menu(&mut self, _version: &str) {}
+
+        pub fn playing_multiplayer(&mut self, _version: &str) {}
+
+        pub fn playing_singleplayer(&mut self, _version: &str) {}
+    }
+}
+#[cfg(not(feature = "discord"))]
+pub use stub::*;

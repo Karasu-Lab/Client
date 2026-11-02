@@ -18,7 +18,7 @@ pub fn load(jar_assets_dir: &Path) {
 
 fn read(jar_assets_dir: &Path) -> Option<HashMap<String, String>> {
     let path = jar_assets_dir.join("minecraft/lang/en_us.json");
-    serde_json::from_str(&std::fs::read_to_string(&path).ok()?)
+    serde_json::from_str(&pomme_vfs::read_to_string(&path).ok()?)
         .inspect_err(|e| tracing::warn!("Couldn't parse {}: {e}", path.display()))
         .ok()
 }
@@ -64,7 +64,7 @@ mod tests {
         assert_eq!(read(&dir), None);
 
         let lang = dir.join("minecraft/lang");
-        std::fs::create_dir_all(&lang).unwrap();
+        pomme_vfs::create_dir_all(&lang).unwrap();
         std::fs::write(
             lang.join("en_us.json"),
             r#"{"chat.type.announcement": "[%s] %s"}"#,

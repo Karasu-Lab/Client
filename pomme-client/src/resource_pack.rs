@@ -42,8 +42,8 @@ impl ResourcePackManager {
     pub fn new(instance_dir: &Path) -> Self {
         let packs_dir = instance_dir.join("resourcepacks");
         let server_cache_dir = packs_dir.join(".server_cache");
-        let _ = std::fs::create_dir_all(&packs_dir);
-        let _ = std::fs::create_dir_all(&server_cache_dir);
+        let _ = pomme_vfs::create_dir_all(&packs_dir);
+        let _ = pomme_vfs::create_dir_all(&server_cache_dir);
         let mut mgr = Self {
             packs_dir,
             server_cache_dir,
@@ -60,7 +60,7 @@ impl ResourcePackManager {
         }
         for pack in self.active_packs.iter().rev() {
             let path = pack.dir.join("assets").join(asset_key);
-            if path.exists() {
+            if pomme_vfs::exists(&path) {
                 return Some(path);
             }
         }
@@ -84,14 +84,14 @@ impl ResourcePackManager {
         let metadata_key = format!("{asset_key}.mcmeta");
         for (source_index, pack) in self.active_packs.iter().enumerate().rev() {
             let path = pack.dir.join("assets").join(asset_key);
-            if !path.exists() {
+            if !pomme_vfs::exists(&path) {
                 continue;
             }
             let metadata = self.active_packs[source_index..]
                 .iter()
                 .rev()
                 .map(|candidate| candidate.dir.join("assets").join(&metadata_key))
-                .find(|candidate| candidate.exists());
+                .find(|candidate| pomme_vfs::exists(&candidate));
             return Some((path, metadata));
         }
         None
@@ -101,13 +101,14 @@ impl ResourcePackManager {
         self.server_cache_dir.join(hash)
     }
 
+    #[cfg(feature = "game")]
     pub fn download_server_pack(
         server_cache_dir: &Path,
         url: &str,
         hash: &str,
     ) -> Result<PathBuf, PackError> {
         let dir = server_cache_dir.join(hash);
-        if !dir.is_dir() {
+        if !pomme_vfs::is_dir(&dir) {
             let data = crate::net::http::blocking_builder()
                 .build()
                 .and_then(|client| client.get(url).send())
@@ -163,7 +164,7 @@ impl ResourcePackManager {
 
     pub fn scan_local_packs(&mut self) {
         self.available_local.clear();
-        let entries = match std::fs::read_dir(&self.packs_dir) {
+        let entries = match pomme_vfs::read_dir(&self.packs_dir) {
             Ok(e) => e,
             Err(_) => return,
         };
@@ -175,8 +176,8 @@ impl ResourcePackManager {
             }
             let name = entry.file_name().to_string_lossy().to_string();
 
-            if path.is_dir() {
-                if path.join("pack.mcmeta").exists() {
+            if pomme_vfs::is_dir(&path) {
+                if pomme_vfs::exists(path.join("pack.mcmeta")) {
                     let already_active = self
                         .active_packs
                         .iter()
@@ -202,7 +203,7 @@ impl ResourcePackManager {
 
     pub fn enable_local_pack(&mut self, name: &str) {
         let path = self.packs_dir.join(name);
-        if path.is_dir() && path.join("pack.mcmeta").exists() {
+        if pomme_vfs::is_dir(&path) && pomme_vfs::exists(path.join("pack.mcmeta")) {
             self.active_packs.retain(|p| p.id != name);
             let info = parse_pack_meta_dir(&path, name);
             self.active_packs.push(ActivePack {
@@ -217,7 +218,7 @@ impl ResourcePackManager {
             });
             tracing::info!("Enabled local resource pack: {name}");
         } else if path.extension().is_some_and(|e| e == "zip")
-            && let Ok(data) = std::fs::read(&path)
+            && let Ok(data) = pomme_vfs::read(&path)
         {
             let extract_dir = self.server_cache_dir.join(format!("_local_{name}"));
             if let Err(e) = extract_zip(&data, &extract_dir) {
@@ -278,6 +279,7 @@ impl std::fmt::Display for PackError {
     }
 }
 
+#[cfg(feature = "game")]
 fn validate_hash(data: &[u8], expected: &str) -> Result<(), PackError> {
     if expected.is_empty() {
         return Ok(());
@@ -323,7 +325,7 @@ fn parse_meta_value(v: &serde_json::Value, fallback: &str) -> (String, String, P
 
 fn parse_pack_meta_dir(dir: &Path, fallback_name: &str) -> PackInfo {
     let meta_path = dir.join("pack.mcmeta");
-    let Some(v) = std::fs::read_to_string(&meta_path)
+    let Some(v) = pomme_vfs::read_to_string(&meta_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
     else {
@@ -347,7 +349,7 @@ fn parse_pack_meta_dir(dir: &Path, fallback_name: &str) -> PackInfo {
 }
 
 fn parse_pack_meta_zip(path: &Path, fallback_name: &str) -> Option<PackInfo> {
-    let data = std::fs::read(path).ok()?;
+    let data = pomme_vfs::read(path).ok()?;
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor).ok()?;
     let mut mcmeta = archive.by_name("pack.mcmeta").ok()?;
@@ -419,7 +421,7 @@ fn format_value(v: &serde_json::Value) -> u32 {
 }
 
 fn extract_zip(data: &[u8], dest: &Path) -> Result<(), PackError> {
-    let _ = std::fs::create_dir_all(dest);
+    let _ = pomme_vfs::create_dir_all(dest);
     let cursor = std::io::Cursor::new(data);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| PackError::Extract(e.to_string()))?;
@@ -435,10 +437,10 @@ fn extract_zip(data: &[u8], dest: &Path) -> Result<(), PackError> {
         let out_path = dest.join(enclosed);
 
         if file.is_dir() {
-            let _ = std::fs::create_dir_all(&out_path);
+            let _ = pomme_vfs::create_dir_all(&out_path);
         } else {
             if let Some(parent) = out_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                let _ = pomme_vfs::create_dir_all(parent);
             }
             let mut out =
                 std::fs::File::create(&out_path).map_err(|e| PackError::Extract(e.to_string()))?;

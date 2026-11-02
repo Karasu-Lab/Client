@@ -52,6 +52,7 @@ impl UserData {
         )
     }
 
+    #[cfg(feature = "game")]
     pub fn from_account(account: &pomme_auth::AuthAccount) -> Self {
         Self::from_args(
             Some(account.username.clone()),

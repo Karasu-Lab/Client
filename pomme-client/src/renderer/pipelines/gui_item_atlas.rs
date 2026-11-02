@@ -24,7 +24,7 @@ const COLOR_FORMAT: rhi::TextureFormat = rhi::TextureFormat::Rgba8Unorm;
 /// base item size in logical GUI units; multiplying by gui_scale makes the bake
 /// 1:1 with display.
 pub fn slot_px_for_screen(screen_w: f32, screen_h: f32, enforce_unicode: bool) -> u32 {
-    (16.0 * crate::ui::hud::gui_scale(screen_w, screen_h, 0, enforce_unicode)).round() as u32
+    (16.0 * crate::ui::scale::gui_scale(screen_w, screen_h, 0, enforce_unicode)).round() as u32
 }
 
 /// Picks the smallest power-of-two atlas size that fits TARGET_SLOT_CAPACITY

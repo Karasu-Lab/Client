@@ -78,7 +78,7 @@ pub const POMME_EDITION_PNG: &[u8] = include_bytes!(concat!(
 
 pub fn load_image(path: &Path) -> Result<image::DynamicImage, image::ImageError> {
     image::open(path).or_else(|_| {
-        let data = std::fs::read(path).map_err(image::ImageError::IoError)?;
+        let data = pomme_vfs::read(path).map_err(image::ImageError::IoError)?;
         image::load_from_memory(&data)
     })
 }
@@ -106,7 +106,7 @@ pub fn resource_stack_paths(
     if let Some(packs) = packs {
         for root in packs.active_pack_dirs() {
             let path = root.join("assets").join(asset_key);
-            if path.is_file() {
+            if pomme_vfs::is_file(&path) {
                 stack.push(path);
             }
         }
@@ -148,7 +148,7 @@ fn builtin_asset(
         .and_then(|idx| idx.resolve(asset_key))
         .or_else(|| {
             let jar = jar_assets_dir.join(asset_key);
-            jar.is_file().then_some(jar)
+            pomme_vfs::is_file(&jar).then_some(jar)
         })
 }
 
@@ -162,7 +162,7 @@ impl AssetIndex {
     pub fn load(indexes_dir: &Path, objects_dir: &Path, version: &str) -> Option<Self> {
         let index_path = indexes_dir.join(format!("{version}.json"));
 
-        let content = std::fs::read_to_string(&index_path)
+        let content = pomme_vfs::read_to_string(&index_path)
             .map_err(|e| tracing::warn!("Failed to read asset index: {e}"))
             .ok()?;
         let parsed: serde_json::Value = serde_json::from_str(&content)
@@ -187,7 +187,7 @@ impl AssetIndex {
     pub fn resolve(&self, asset_key: &str) -> Option<PathBuf> {
         let hash = self.hashes.get(asset_key)?;
         let path = self.objects_dir.join(&hash[..2]).join(hash);
-        path.exists().then_some(path)
+        pomme_vfs::exists(&path).then_some(path)
     }
 
     pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {

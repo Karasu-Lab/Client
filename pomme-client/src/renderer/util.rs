@@ -263,7 +263,7 @@ pub fn transition_image_to_shader_read(
 }
 
 pub fn load_png(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
-    let file = std::fs::File::open(path).ok()?;
+    let file = std::io::Cursor::new(pomme_vfs::read(path).ok()?);
     let mut decoder = png::Decoder::new(file);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;

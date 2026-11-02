@@ -365,8 +365,8 @@ pub struct PackRenderer {
     shadow_view_projection: Mat4,
     previous: Option<Previous>,
     frame_counter: u32,
-    started: std::time::Instant,
-    last_prepare: Option<std::time::Instant>,
+    started: crate::clock::Instant,
+    last_prepare: Option<crate::clock::Instant>,
     custom: CustomUniforms,
     /// `eyeBrightnessSmooth`, eased toward `eyeBrightness`.
     eye_brightness_smooth: Option<[f32; 2]>,
@@ -586,7 +586,7 @@ impl PackRenderer {
             shadow_view_projection: Mat4::IDENTITY,
             previous: None,
             frame_counter: 0,
-            started: std::time::Instant::now(),
+            started: crate::clock::Instant::now(),
             last_prepare: None,
             custom: pack.custom_uniforms.clone(),
             eye_brightness_smooth: None,
@@ -1033,7 +1033,7 @@ impl PackRenderer {
             )));
         }
 
-        let now = std::time::Instant::now();
+        let now = crate::clock::Instant::now();
         let frame_time = self
             .last_prepare
             .map_or(1.0 / 60.0, |last| (now - last).as_secs_f32());

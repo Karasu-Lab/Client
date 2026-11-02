@@ -41,7 +41,7 @@ pub fn dir(root: &Path) -> PathBuf {
 }
 
 pub fn is_installed(root: &Path) -> bool {
-    dir(root).join(MARKER).exists()
+    pomme_vfs::exists(&dir(root).join(MARKER))
 }
 
 /// Downloads whatever of the pinned release is missing into `dir(root)`,

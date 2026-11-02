@@ -4,7 +4,9 @@ pub mod block_entity_anim;
 pub mod chunk;
 pub mod clock;
 pub mod environment;
+pub mod generated;
 pub mod level;
 pub mod light;
 pub mod piston;
+#[cfg(feature = "game")]
 pub mod waypoints;

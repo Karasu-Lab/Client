@@ -164,7 +164,7 @@ fn default_brightness() -> f32 {
 
 /// Vanilla `menuBackgroundBlurriness`: 0 (off) to 10, default 5.
 const MAX_MENU_BACKGROUND_BLURRINESS: u8 = 10;
-pub const DEFAULT_MENU_BACKGROUND_BLURRINESS: u8 = 5;
+pub use crate::ui::scale::DEFAULT_MENU_BACKGROUND_BLURRINESS;
 
 fn default_menu_background_blurriness() -> u8 {
     DEFAULT_MENU_BACKGROUND_BLURRINESS

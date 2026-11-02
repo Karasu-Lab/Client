@@ -4,12 +4,13 @@
 //! mouse pointer, so every screen works unchanged.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use glam::Vec2;
 use winit::event::TouchPhase;
 
 use super::action::Action;
+use crate::clock::Instant;
 
 /// A press lifted within this, having stayed still, is a use.
 const TAP_TIME: Duration = Duration::from_millis(250);
@@ -89,7 +90,14 @@ impl TouchLayout {
     }
 
     fn hotbar_slot_at(&self, p: Vec2) -> Option<u8> {
-        crate::ui::hud::hotbar_slot_at(self.width, self.height, self.gs, (p.x, p.y))
+        #[cfg(feature = "game")]
+        return crate::ui::hud::hotbar_slot_at(self.width, self.height, self.gs, (p.x, p.y));
+        // The viewer has no hotbar to touch.
+        #[cfg(not(feature = "game"))]
+        {
+            let _ = p;
+            None
+        }
     }
 }
 
@@ -305,12 +313,13 @@ impl TouchControls {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use glam::Vec2;
     use winit::event::TouchPhase;
 
     use super::{Action, TouchButton, TouchControls, TouchLayout, TouchOutput};
+    use crate::clock::Instant;
 
     const LAYOUT: TouchLayout = TouchLayout {
         width: 1600.0,

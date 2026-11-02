@@ -109,21 +109,15 @@ const MAX_UNIHEX_LINE_BYTES: usize = 512;
 const MAX_PROVIDER_GLYPHS: usize = 262_144;
 
 fn read_file_bounded(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8>, String> {
-    let file = std::fs::File::open(path)
-        .map_err(|error| format!("failed to open {kind} {}: {error}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("failed to stat {kind} {}: {error}", path.display()))?;
-    if metadata.len() > max_bytes as u64 {
+    let size =
+        pomme_vfs::len(path).ok_or_else(|| format!("failed to open {kind} {}", path.display()))?;
+    if size > max_bytes as u64 {
         return Err(format!(
-            "{kind} {} is {} bytes, exceeding the {max_bytes}-byte limit",
+            "{kind} {} is {size} bytes, exceeding the {max_bytes}-byte limit",
             path.display(),
-            metadata.len()
         ));
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(max_bytes as u64 + 1)
-        .read_to_end(&mut bytes)
+    let bytes = pomme_vfs::read(path)
         .map_err(|error| format!("failed to read {kind} {}: {error}", path.display()))?;
     if bytes.len() > max_bytes {
         return Err(format!(
@@ -614,7 +608,7 @@ fn discover_font_ids(sources: &FontSources<'_>) -> Vec<String> {
             .map(|root| root.join("assets")),
     );
     for assets in asset_roots {
-        let Ok(namespaces) = std::fs::read_dir(assets) else {
+        let Ok(namespaces) = pomme_vfs::read_dir(assets) else {
             continue;
         };
         for namespace in namespaces.flatten() {
@@ -639,7 +633,7 @@ fn discover_font_ids(sources: &FontSources<'_>) -> Vec<String> {
 }
 
 fn collect_font_ids_from_dir(dir: &Path, namespace: &str, prefix: &str, out: &mut HashSet<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = pomme_vfs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
@@ -1402,9 +1396,10 @@ fn json_codepoint(value: &serde_json::Value) -> Option<u32> {
 }
 
 fn load_unihex_zip(path: &Path, overrides: &[UnihexOverride]) -> Result<Vec<UnihexGlyph>, String> {
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let zip_bytes = file.metadata().map_err(|error| error.to_string())?.len();
-    let mut archive = zip::ZipArchive::new(file).map_err(|error| error.to_string())?;
+    let bytes = pomme_vfs::read(path).map_err(|error| error.to_string())?;
+    let zip_bytes = bytes.len() as u64;
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| error.to_string())?;
     validate_unihex_archive_header(zip_bytes, archive.len())?;
 
     let mut raw: HashMap<u32, ([u32; 16], u8)> = HashMap::new();
@@ -1643,13 +1638,13 @@ mod tests {
 
         fn write(&self, path: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
             let path = self.root.join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            pomme_vfs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
         }
 
         fn write_png(&self, path: impl AsRef<Path>, image: &image::RgbaImage) {
             let path = self.root.join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            pomme_vfs::create_dir_all(path.parent().unwrap()).unwrap();
             image.save(path).unwrap();
         }
 
@@ -2027,7 +2022,7 @@ mod tests {
         );
         let mut packs = ResourcePackManager::new(&fixture.root.join("instance"));
         let pack = fixture.root.join("instance/resourcepacks/bad");
-        std::fs::create_dir_all(pack.join("assets/example/font")).unwrap();
+        pomme_vfs::create_dir_all(pack.join("assets/example/font")).unwrap();
         std::fs::write(
             pack.join("pack.mcmeta"),
             r#"{"pack":{"pack_format":55,"description":"bad"}}"#,

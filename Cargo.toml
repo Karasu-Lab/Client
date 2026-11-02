@@ -5,6 +5,7 @@ members = [
     "pomme-ios",
     "pomme-auth",
     "pomme-install",
+    "pomme-vfs",
     "pomme-client",
     "pomme-gpu-allocator",
     "pomme-block",
@@ -27,7 +28,7 @@ sha1_smol = "1"
 open = "5"
 base64 = "0.23"
 zip = { version = "9.0", default-features = false, features = ["deflate"] }
-tokio = { version = "1", features = ["full"] }
+tokio = "1"
 reqwest = { version = "0.13", features = ["json"] }
 # Shared by pomme-client and pomme-protocol; the versions must agree so
 # glam types unify across the crate boundary.
@@ -54,16 +55,21 @@ tracing-subscriber = "0.3"
 azalea-buf = { git = "https://github.com/azalea-rs/azalea", rev = "ffedf17c9b6ff9fbafbf7e0d14c8d2366b2d0a32" }
 azalea-protocol = { git = "https://github.com/azalea-rs/azalea", rev = "ffedf17c9b6ff9fbafbf7e0d14c8d2366b2d0a32" }
 azalea-crypto = { git = "https://github.com/azalea-rs/azalea", rev = "ffedf17c9b6ff9fbafbf7e0d14c8d2366b2d0a32" }
-azalea-auth = { git = "https://github.com/azalea-rs/azalea", rev = "ffedf17c9b6ff9fbafbf7e0d14c8d2366b2d0a32" }
+azalea-auth = { path = "third_party/vendor/azalea-auth" }
 azalea-entity = { git = "https://github.com/azalea-rs/azalea", rev = "ffedf17c9b6ff9fbafbf7e0d14c8d2366b2d0a32" }
 azalea-block = { path = "pomme-block" }
 azalea-chat = { git = "https://github.com/azalea-rs/azalea", rev = "ffedf17c9b6ff9fbafbf7e0d14c8d2366b2d0a32" }
 azalea-core = { git = "https://github.com/azalea-rs/azalea", rev = "ffedf17c9b6ff9fbafbf7e0d14c8d2366b2d0a32" }
-azalea-registry = { git = "https://github.com/azalea-rs/azalea", rev = "ffedf17c9b6ff9fbafbf7e0d14c8d2366b2d0a32" }
+azalea-registry = { path = "third_party/vendor/azalea-registry" }
 azalea-inventory = { git = "https://github.com/azalea-rs/azalea", rev = "ffedf17c9b6ff9fbafbf7e0d14c8d2366b2d0a32" }
+# simdnbt refuses to build on 32-bit targets; SteelMC carries a copy without that
+# check (see its VENDORED.md), which the browser build needs.
+simdnbt = { path = "third_party/SteelMC/vendor/simdnbt" }
 
 [patch."https://github.com/azalea-rs/azalea"]
+azalea-auth = { path = "third_party/vendor/azalea-auth" }
 azalea-block = { path = "pomme-block" }
+azalea-registry = { path = "third_party/vendor/azalea-registry" }
 
 [profile.dev]
 opt-level = 1

@@ -1,28 +1,41 @@
 // Per-thread-heap allocator (see Cargo.toml): keeps the chunk-mesh worker
 // pool's cross-thread Vec churn from serializing on the system heap's global
 // lock and stalling the main thread.
+#[cfg(feature = "game")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(feature = "game")]
 mod account;
 mod app;
+#[cfg(feature = "game")]
 mod args;
 mod assets;
 mod attribute;
+#[cfg(feature = "game")]
 mod audio;
+#[cfg(not(feature = "game"))]
+#[path = "audio_silent.rs"]
+mod audio;
+#[cfg(feature = "game")]
 mod benchmark;
 mod chat_component;
+mod clock;
 #[cfg(feature = "cpu-bench")]
 mod cpu_bench;
 mod dirs;
+#[cfg(feature = "game")]
 mod discord;
 mod entity;
 #[cfg(feature = "test-harness")]
 mod harness;
+#[cfg(feature = "game")]
 mod headless;
 mod lang;
+#[cfg(feature = "game")]
 mod logging;
 mod mob_effect;
+#[cfg(feature = "game")]
 mod net;
 mod particle;
 mod physics;
@@ -32,34 +45,46 @@ mod recipe;
 mod renderer;
 mod resource_pack;
 mod shaderpack;
+#[cfg(feature = "game")]
 mod singleplayer;
 #[cfg(test)]
 mod test_util;
 mod tool;
 mod ui;
+#[cfg(feature = "game")]
 mod update;
 mod user;
 mod util;
 mod version;
 mod world;
 
+#[cfg(feature = "game")]
 use std::path::PathBuf;
+#[cfg(feature = "game")]
 use std::sync::Arc;
 
+#[cfg(feature = "game")]
 use pomme_protocol::ProtocolVersion;
+#[cfg(feature = "game")]
 use pomme_protocol::version::{NATIVE, VERSIONS};
 #[cfg(target_os = "android")]
+#[cfg(feature = "game")]
 pub use winit::platform::android::activity::AndroidApp;
 
+#[cfg(feature = "game")]
 use crate::app::App;
+#[cfg(feature = "game")]
 pub use crate::args::{LAUNCH_FILE, LaunchArgs};
 #[cfg(target_os = "android")]
+#[cfg(feature = "game")]
 pub use crate::logging::install_panic_hook;
+#[cfg(feature = "game")]
 use crate::user::UserData;
 
 /// macOS has no system Vulkan: releases ship MoltenVK beside the binary,
 /// and the loader only finds it through its manifest.
 #[cfg(target_os = "macos")]
+#[cfg(feature = "game")]
 fn use_bundled_moltenvk() {
     if std::env::var_os("VK_ICD_FILENAMES").is_some()
         || std::env::var_os("VK_DRIVER_FILES").is_some()
@@ -78,6 +103,7 @@ fn use_bundled_moltenvk() {
 }
 
 /// What differs per platform at startup.
+#[cfg(feature = "game")]
 pub struct Platform {
     /// Replaces the per-user data directory; Android passes its app storage.
     pub data_root: Option<PathBuf>,
@@ -85,6 +111,7 @@ pub struct Platform {
     pub android_app: AndroidApp,
 }
 
+#[cfg(feature = "game")]
 pub fn run(args: LaunchArgs, platform: Platform) {
     // mimalloc v3 holds freed memory for a second before returning it to the
     // OS, so a chunk-load spike lingers; 10 ms (v2's default) returns it
@@ -211,9 +238,9 @@ pub fn run(args: LaunchArgs, platform: Platform) {
     // A harness script stays off the user's Discord profile, and phones have
     // no Discord client to talk to.
     #[cfg(feature = "test-harness")]
-    let discord = args.harness_script.is_none();
+    let discord = cfg!(feature = "discord") && args.harness_script.is_none();
     #[cfg(not(feature = "test-harness"))]
-    let discord = cfg!(not(mobile));
+    let discord = cfg!(all(feature = "discord", not(mobile)));
     let presence = discord
         .then(|| {
             crate::discord::DiscordPresence::start(version)

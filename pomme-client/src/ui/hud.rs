@@ -496,22 +496,7 @@ pub fn hotbar_slot_at(screen_w: f32, screen_h: f32, gs: f32, (x, y): (f32, f32))
     (0.0..9.0).contains(&slot).then_some(slot as u8)
 }
 
-/// Vanilla `Window.calculateScale`: the largest scale that keeps the screen at
-/// least 320x240, capped by `setting` (0 is Auto), then made even while Force
-/// Unicode Font is on.
-pub fn gui_scale(screen_w: f32, screen_h: f32, setting: u32, enforce_unicode: bool) -> f32 {
-    let mut scale = 1;
-    while scale != setting
-        && screen_w / (scale + 1) as f32 >= 320.0
-        && screen_h / (scale + 1) as f32 >= 240.0
-    {
-        scale += 1;
-    }
-    if enforce_unicode && scale % 2 != 0 {
-        scale += 1;
-    }
-    scale as f32
-}
+pub use crate::ui::scale::gui_scale;
 
 /// Vanilla `ScreenEffectRenderer.submitWater`: underwater.png tiled 4x and
 /// scrolled by the look direction, alpha 0.1, tinted by the local lightmap

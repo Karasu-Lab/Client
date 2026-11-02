@@ -585,14 +585,14 @@ fn constraints_match<'a>(
 }
 
 fn load_cache(path: &Path) -> Option<HashMap<String, FaceTextures>> {
-    let data = std::fs::read_to_string(path).ok()?;
+    let data = pomme_vfs::read_to_string(path).ok()?;
     serde_json::from_str(&data).ok()
 }
 
 /// Atomic, since every client of a version shares the one cache.
 fn save_cache(path: &Path, textures: &HashMap<String, FaceTextures>) {
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let _ = pomme_vfs::create_dir_all(dir);
     }
     if let Ok(json) = serde_json::to_string(textures)
         && let Err(e) = crate::util::write_atomic(path, json.as_bytes())

@@ -368,9 +368,9 @@ pub struct ChunkMeshData {
 }
 
 pub struct RemeshTiming {
-    pub enqueued_at: std::time::Instant,
-    pub started_at: std::time::Instant,
-    pub meshed_at: std::time::Instant,
+    pub enqueued_at: crate::clock::Instant,
+    pub started_at: crate::clock::Instant,
+    pub meshed_at: crate::clock::Instant,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -814,7 +814,7 @@ pub struct MeshDispatcher {
     /// The last published batch's jobs by column, reused by the next publish
     /// when it asks for the same work.
     published: HashMap<ChunkPos, Arc<PendingJob>>,
-    workers: Vec<std::thread::JoinHandle<()>>,
+    workers: Vec<thread::JoinHandle<()>>,
     // Monotonic per-enqueue stamp; see `ChunkMeshData::upload_epoch`. Starts at 1
     // so 0 means "never uploaded" on the buffer side.
     next_epoch: AtomicU64,
@@ -905,21 +905,17 @@ impl MeshDispatcher {
         // Half the cores, capped. Too many saturated workers starve the
         // main/render thread during a load burst (frame spikes); the cap trades
         // some load throughput for that.
-        let worker_count = std::thread::available_parallelism()
-            .map(|n| (n.get() / 2).clamp(2, 16))
-            .unwrap_or(2);
+        let worker_count = (thread::available_parallelism() / 2).clamp(2, 16);
         let mut workers = Vec::with_capacity(worker_count);
         for _ in 0..worker_count {
             let queue = Arc::clone(&queue);
             let claimed = Arc::clone(&claimed);
             workers.push(
-                std::thread::Builder::new()
-                    .name("chunk-mesher".into())
-                    .spawn(move || {
-                        lower_current_thread_priority();
-                        queue.run_worker(&claimed)
-                    })
-                    .expect("spawn chunk-mesher thread"),
+                thread::spawn("chunk-mesher", move || {
+                    lower_current_thread_priority();
+                    queue.run_worker(&claimed)
+                })
+                .expect("spawn chunk-mesher thread"),
             );
         }
 
@@ -1033,7 +1029,7 @@ impl MeshDispatcher {
             upload_epoch: self.next_epoch.fetch_add(1, Ordering::Relaxed),
             sections: request.sections,
             is_recompile: request.recompile,
-            enqueued_at: std::time::Instant::now(),
+            enqueued_at: crate::clock::Instant::now(),
             snapshot: Mutex::new(Some(self.build_snapshot(chunk_store, request.pos))),
             render_view: self.render_view.clone(),
             uv_map: Arc::clone(&self.uv_map),
@@ -1070,7 +1066,7 @@ impl MeshDispatcher {
         sections: std::ops::Range<i32>,
         content_gen: u64,
     ) -> ChunkMeshData {
-        let started_at = std::time::Instant::now();
+        let started_at = crate::clock::Instant::now();
         let mut snapshot = self.build_snapshot(chunk_store, pos);
         let mut mesh = mesh_chunk_snapshot(
             &mut snapshot,
@@ -1216,7 +1212,7 @@ struct PendingJob {
     upload_epoch: u64,
     sections: std::ops::Range<i32>,
     is_recompile: bool,
-    enqueued_at: std::time::Instant,
+    enqueued_at: crate::clock::Instant,
     snapshot: Mutex<Option<ChunkStoreSnapshot>>,
     render_view: OwnedBlockRenderView,
     uv_map: Arc<AtlasUVMap>,
@@ -1234,7 +1230,7 @@ impl PendingJob {
     }
 
     fn run(&self, mut snapshot: ChunkStoreSnapshot) {
-        let started_at = std::time::Instant::now();
+        let started_at = crate::clock::Instant::now();
         let mut mesh = mesh_chunk_snapshot(
             &mut snapshot,
             self.pos,
@@ -1244,7 +1240,7 @@ impl PendingJob {
             self.sections.clone(),
             &self.pool,
         );
-        let meshed_at = std::time::Instant::now();
+        let meshed_at = crate::clock::Instant::now();
         mesh.incarnation = self.incarnation;
         mesh.content_gen = self.content_gen;
         mesh.upload_epoch = self.upload_epoch;
