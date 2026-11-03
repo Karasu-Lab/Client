@@ -159,7 +159,7 @@ impl ScreenshotCapture {
         let (w, h, bgra) = (cap.width, cap.height, cap.bgra);
         let dir = self.game_dir.join("screenshots");
         let target = cap.target;
-        std::thread::spawn(move || {
+        let _ = thread::spawn("screenshot", move || {
             let _ = tx.send(encode_and_write(&pixels, w, h, bgra, &dir, target));
         });
     }
@@ -205,7 +205,7 @@ fn encode_and_write(
 /// `Screenshot.getFile`: `<game dir>/screenshots/<timestamp>.png`; on
 /// collision the counter starts at 2 (`name.png`, `name_2.png`, ...).
 fn next_filename(dir: &Path) -> Result<(PathBuf, String), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    pomme_vfs::create_dir_all(dir).map_err(|e| e.to_string())?;
 
     let stamp = timestamp();
     let mut n = 1u32;
@@ -216,7 +216,7 @@ fn next_filename(dir: &Path) -> Result<(PathBuf, String), String> {
             format!("{stamp}_{n}.png")
         };
         let path = dir.join(&name);
-        if !path.exists() {
+        if !pomme_vfs::exists(&path) {
             return Ok((path, name));
         }
         n += 1;
@@ -232,11 +232,13 @@ fn timestamp() -> String {
 }
 
 fn write_png(path: &Path, rgb: &[u8], width: u32, height: u32) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut encoder = png::Encoder::new(BufWriter::new(file), width, height);
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
-    writer.write_image_data(rgb).map_err(|e| e.to_string())?;
-    Ok(())
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(BufWriter::new(&mut out), width, height);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        writer.write_image_data(rgb).map_err(|e| e.to_string())?;
+    }
+    pomme_vfs::write(path, &out).map_err(|e| e.to_string())
 }

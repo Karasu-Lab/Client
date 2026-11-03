@@ -649,12 +649,12 @@ fn collect_equipment_json_dir(
     namespace: &str,
     out: &mut HashMap<String, PathBuf>,
 ) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = pomme_vfs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if pomme_vfs::is_dir(&path) {
             collect_equipment_json_dir(&path, base, namespace, out);
             continue;
         }
@@ -678,17 +678,17 @@ fn collect_equipment_json_dir(
 }
 
 fn collect_equipment_json_root(root: &Path, out: &mut HashMap<String, PathBuf>) {
-    let Ok(namespaces) = std::fs::read_dir(root) else {
+    let Ok(namespaces) = pomme_vfs::read_dir(root) else {
         return;
     };
     for namespace in namespaces.flatten() {
         let ns_path = namespace.path();
-        if !ns_path.is_dir() {
+        if !pomme_vfs::is_dir(&ns_path) {
             continue;
         }
         let ns = namespace.file_name().to_string_lossy().to_string();
         let equipment = ns_path.join("equipment");
-        if equipment.is_dir() {
+        if pomme_vfs::is_dir(&equipment) {
             collect_equipment_json_dir(&equipment, &equipment, &ns, out);
         }
     }
@@ -710,7 +710,7 @@ fn discover_equipment_json(
 }
 
 fn read_equipment_json(path: &Path) -> Option<EquipmentClientInfoJson> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = pomme_vfs::read(path).ok()?;
     serde_json::from_slice(&bytes)
         .map_err(|error| {
             tracing::warn!(

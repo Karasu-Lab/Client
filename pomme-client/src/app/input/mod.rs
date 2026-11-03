@@ -12,7 +12,9 @@ use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
 use self::touch::{TouchControls, TouchLayout, TouchOutput};
 use crate::app::TICK_RATE_MS;
+#[cfg(feature = "game")]
 use crate::app::phases::AppPhase;
+#[cfg(feature = "game")]
 use crate::app::state_slot::StateSlot;
 
 pub mod action;
@@ -235,6 +237,7 @@ impl InputState {
         }
     }
 
+    #[cfg(feature = "game")]
     pub fn update(&mut self, phase: &mut StateSlot<AppPhase>) -> bool {
         let events: Vec<gilrs::Event> = match self.gamepad_manager.as_mut() {
             Some(manager) => std::iter::from_fn(|| manager.next_event()).collect(),
@@ -243,9 +246,10 @@ impl InputState {
         for event in &events {
             self.on_gamepad_event(event);
         }
-        let held = self
-            .touch
-            .tick(std::time::Instant::now(), phase.get().world_has_pointer());
+        let held = self.touch.tick(
+            crate::clock::Instant::now(),
+            phase.get().world_has_pointer(),
+        );
         self.apply_touch(held);
 
         if self.binding_capture {
@@ -1050,7 +1054,7 @@ impl InputState {
             p,
             gameplay,
             layout,
-            std::time::Instant::now(),
+            crate::clock::Instant::now(),
         );
         self.apply_touch(out);
     }
@@ -1399,6 +1403,7 @@ mod binding_lookup_tests {
         assert!(!input.action_just_pressed(Action::OpenMenu));
     }
 
+    #[cfg(feature = "game")]
     #[test]
     fn configured_enter_close_precedes_menu_activation() {
         use crate::ui::menu::MenuInput;

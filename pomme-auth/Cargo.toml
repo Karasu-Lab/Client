@@ -14,5 +14,5 @@ keyring = ["dep:keyring"]
 reqwest = { workspace = true, features = ["form"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["full"] }
 keyring = { version = "3", features = ["apple-native", "sync-secret-service", "windows-native"], optional = true }

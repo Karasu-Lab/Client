@@ -6,9 +6,9 @@
 //! one place UTF-16 semantics survive: it is counted in UTF-16 code units to
 //! match Java `String.length()`, so an astral char (emoji) costs 2.
 
-use std::time::Instant;
-
 use winit::keyboard::KeyCode;
+
+use crate::clock::Instant;
 
 pub const BACKWARDS: i32 = -1;
 pub const FORWARDS: i32 = 1;

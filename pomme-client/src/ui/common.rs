@@ -2,6 +2,7 @@ use azalea_inventory::components::{CustomName, Damage, ItemName, MaxDamage, Unbr
 use azalea_inventory::{ItemStack, ItemStackData};
 use azalea_registry::tags::items::BUNDLES;
 
+#[cfg(feature = "game")]
 use crate::benchmark::UploadStatus;
 use crate::player::inventory::item_resource_name;
 use crate::renderer::pipelines::menu_overlay::{MenuElement, SpriteId, TooltipLine};
@@ -164,6 +165,7 @@ pub enum ResultAction {
     Recopy,
 }
 
+#[cfg(feature = "game")]
 /// A centered results panel: dimmed backdrop, a large title, a column of detail
 /// lines, an upload status line, and an "upload & copy link" button. Shared by
 /// the benchmark result overlays. Returns what the caller should do based on
@@ -274,10 +276,12 @@ pub(crate) fn get_clipboard() -> String {
     return unsafe { objc2_ui_kit::UIPasteboard::generalPasteboard().string() }
         .map(|text| text.to_string())
         .unwrap_or_default();
-    #[cfg(not(mobile))]
-    arboard::Clipboard::new()
+    #[cfg(all(not(mobile), feature = "game"))]
+    return arboard::Clipboard::new()
         .and_then(|mut cb| cb.get_text())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    #[cfg(all(not(mobile), not(feature = "game")))]
+    String::new()
 }
 
 /// Copy `text` to the system clipboard, returning whether it succeeded.
@@ -294,13 +298,18 @@ pub(crate) fn set_clipboard(text: &str) -> bool {
         unsafe { objc2_ui_kit::UIPasteboard::generalPasteboard().setString(Some(&text)) };
         true
     }
-    #[cfg(not(mobile))]
-    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+    #[cfg(all(not(mobile), feature = "game"))]
+    return match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
         Ok(()) => true,
         Err(err) => {
             tracing::warn!("Failed to set clipboard: {err}");
             false
         }
+    };
+    #[cfg(all(not(mobile), not(feature = "game")))]
+    {
+        let _ = text;
+        false
     }
 }
 
@@ -679,6 +688,39 @@ fn durability_color(health: f32) -> [f32; 4] {
 
 /// Measures rendered text width in framebuffer px at the given font size.
 pub type TextWidthFn<'a> = &'a dyn Fn(&str, f32) -> f32;
+
+/// The F3 screen's lines, one per row, at `x` (right-aligned unless
+/// `left_align`) from `start_y` down.
+pub(crate) fn push_debug_lines(
+    elements: &mut Vec<MenuElement>,
+    lines: Vec<String>,
+    x: f32,
+    start_y: f32,
+    fs: f32,
+    left_align: bool,
+    text_width_fn: TextWidthFn,
+) {
+    let line_h = fs * 1.25;
+    for (i, line) in lines.into_iter().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let y = start_y + i as f32 * line_h;
+        let tx = if left_align {
+            x
+        } else {
+            x - text_width_fn(&line, fs)
+        };
+        elements.push(MenuElement::Text {
+            x: tx,
+            y,
+            text: line,
+            scale: fs,
+            color: WHITE,
+            centered: false,
+        });
+    }
+}
 
 /// Inputs for the vanilla scrolling-label treatment: labels wider than the
 /// widget are clipped to it and slide back and forth over time.

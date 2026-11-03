@@ -14,7 +14,7 @@ use crate::world::environment::{
     ModifierOp, Skybox, Track,
 };
 
-pub(super) const TIMELINE_REGISTRY: &str = "minecraft:timeline";
+pub(crate) const TIMELINE_REGISTRY: &str = "minecraft:timeline";
 
 /// An attribute's value type and its codecs.
 trait WireValue: AttributeValue {
@@ -281,7 +281,7 @@ fn layers<T: WireValue>(
 
 /// The dimension type's attribute layers. `timelines` must already be a list
 /// of ids (see [`resolve_timeline_tags`]).
-pub(super) fn environment(
+pub(crate) fn environment(
     extra: &HashMap<String, NbtTag>,
     registries: &RegistryHolder,
     has_weather: bool,
@@ -292,7 +292,7 @@ pub(super) fn environment(
         .iter()
         .filter_map(|id| timeline_registry?.map.get(&Identifier::new(id)))
         .collect();
-    let biome_registry = super::connection::biome_registry(registries);
+    let biome_registry = super::registry_wire::biome_registry(registries);
     let biomes: Vec<Option<&NbtCompound>> = biome_registry
         .map(|registry| {
             registry
@@ -359,7 +359,7 @@ pub(super) fn environment(
 }
 
 /// A `timelines` holder set's ids; a tag that wasn't resolved names none.
-pub(super) fn timeline_ids(holder_set: Option<&NbtTag>) -> Vec<String> {
+pub(crate) fn timeline_ids(holder_set: Option<&NbtTag>) -> Vec<String> {
     match holder_set {
         Some(NbtTag::String(id)) if !id.to_str().starts_with('#') => vec![id.to_string()],
         Some(NbtTag::List(list)) => list
@@ -372,7 +372,7 @@ pub(super) fn timeline_ids(holder_set: Option<&NbtTag>) -> Vec<String> {
 
 /// Rewrites each dimension type's `timelines` tag reference as the list of
 /// timeline ids it names, from the synced `minecraft:timeline` tags.
-pub(super) fn resolve_timeline_tags(
+pub(crate) fn resolve_timeline_tags(
     registries: &mut RegistryHolder,
     tags: &HashMap<String, Vec<usize>>,
 ) {

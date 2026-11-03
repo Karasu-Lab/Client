@@ -2915,8 +2915,7 @@ pub fn update_game(
             mesh_gate: game
                 .vis_valid
                 .then_some((game.mesh_gate.visible, 0, game.mesh_gate.hidden)),
-            gpu_name: gfx.renderer.gpu_name(),
-            vulkan_version: gfx.renderer.api_version(),
+            renderer: gfx.renderer.renderer_info(),
             screen_w: gfx.renderer.screen_width(),
             screen_h: gfx.renderer.screen_height(),
             timings: Some(hud::FrameTimings {

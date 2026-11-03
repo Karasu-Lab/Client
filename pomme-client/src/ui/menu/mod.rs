@@ -164,7 +164,7 @@ fn default_brightness() -> f32 {
 
 /// Vanilla `menuBackgroundBlurriness`: 0 (off) to 10, default 5.
 const MAX_MENU_BACKGROUND_BLURRINESS: u8 = 10;
-pub const DEFAULT_MENU_BACKGROUND_BLURRINESS: u8 = 5;
+pub use crate::ui::scale::DEFAULT_MENU_BACKGROUND_BLURRINESS;
 
 fn default_menu_background_blurriness() -> u8 {
     DEFAULT_MENU_BACKGROUND_BLURRINESS
@@ -790,6 +790,9 @@ pub struct MainMenu {
     pub available_packs: Vec<crate::resource_pack::PackInfo>,
     pub packs_dir: PathBuf,
     pub pack_toggle: Option<(String, bool)>,
+    /// A selected pack to move along the list: the pack's name and how many
+    /// places, towards the highest priority when positive.
+    pub pack_move: Option<(String, isize)>,
     pub rescan_packs: bool,
     pub reload_assets: bool,
     /// Set by a Font Settings toggle, applied by `AppCore::apply_font_options`.
@@ -947,6 +950,7 @@ impl MainMenu {
             available_packs: Vec::new(),
             packs_dir: game_dir.join("resourcepacks"),
             pack_toggle: None,
+            pack_move: None,
             rescan_packs: false,
             reload_assets: false,
             reload_fonts: false,

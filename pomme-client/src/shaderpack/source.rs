@@ -23,15 +23,15 @@ pub enum SourceError {
 
 impl PackSource {
     pub fn open(path: &Path) -> Result<Self, SourceError> {
-        if path.is_dir() {
+        if pomme_vfs::is_dir(&path) {
             let shaders = path.join("shaders");
-            return if shaders.is_dir() {
+            return if pomme_vfs::is_dir(&shaders) {
                 Ok(Self::Dir(shaders))
             } else {
                 Err(SourceError::NoShaders)
             };
         }
-        let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(pomme_vfs::read(path)?))?;
         // Some zips nest the pack in a folder: take the shallowest `shaders/`.
         let prefix = (0..archive.len())
             .filter_map(|i| {
@@ -66,7 +66,7 @@ impl PackSource {
     /// The file at `path`, relative to `shaders/` with `/` separators.
     pub fn read(&self, path: &str) -> Option<String> {
         let bytes = match self {
-            Self::Dir(root) => std::fs::read(root.join(inside(path)?)).ok()?,
+            Self::Dir(root) => pomme_vfs::read(root.join(inside(path)?)).ok()?,
             Self::Zip(files) => files.get(path)?.clone(),
         };
         Some(String::from_utf8_lossy(&bytes).into_owned())
@@ -79,9 +79,9 @@ impl PackSource {
                 let mut files = Vec::new();
                 let mut dirs = vec![root.clone()];
                 while let Some(dir) = dirs.pop() {
-                    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                    for entry in pomme_vfs::read_dir(dir).into_iter().flatten().flatten() {
                         let path = entry.path();
-                        if path.is_dir() {
+                        if pomme_vfs::is_dir(&path) {
                             dirs.push(path);
                         } else if let Ok(rel) = path.strip_prefix(root) {
                             files.push(rel.to_string_lossy().replace('\\', "/"));
@@ -98,14 +98,14 @@ impl PackSource {
 
     pub fn exists(&self, path: &str) -> bool {
         match self {
-            Self::Dir(root) => inside(path).is_some_and(|p| root.join(p).is_file()),
+            Self::Dir(root) => inside(path).is_some_and(|p| pomme_vfs::is_file(root.join(p))),
             Self::Zip(files) => files.contains_key(path),
         }
     }
 
     pub fn has_folder(&self, path: &str) -> bool {
         match self {
-            Self::Dir(root) => inside(path).is_some_and(|p| root.join(p).is_dir()),
+            Self::Dir(root) => inside(path).is_some_and(|p| pomme_vfs::is_dir(root.join(p))),
             Self::Zip(files) => {
                 let prefix = format!("{path}/");
                 files.keys().any(|f| f.starts_with(&prefix))

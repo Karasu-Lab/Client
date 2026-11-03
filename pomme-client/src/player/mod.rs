@@ -1,6 +1,10 @@
+#[cfg(feature = "game")]
 pub mod interaction;
 pub mod inventory;
+#[cfg(feature = "game")]
 pub mod menu_click;
+pub mod stack;
+#[cfg(feature = "game")]
 pub mod tab_list;
 
 use glam::{dvec2, dvec3};

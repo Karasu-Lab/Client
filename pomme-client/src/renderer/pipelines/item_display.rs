@@ -44,7 +44,7 @@ impl DisplayResolver {
 }
 
 fn read_json(path: &Path) -> Option<serde_json::Value> {
-    let s = std::fs::read_to_string(path).ok()?;
+    let s = pomme_vfs::read_to_string(path).ok()?;
     serde_json::from_str(&s).ok()
 }
 
@@ -92,8 +92,8 @@ mod tests {
     fn a_missing_left_hand_falls_back_to_the_same_models_right_hand() {
         let dir = crate::test_util::test_temp_dir("display_fallback");
         let mc = dir.join("minecraft");
-        std::fs::create_dir_all(mc.join("items")).unwrap();
-        std::fs::create_dir_all(mc.join("models/item")).unwrap();
+        pomme_vfs::create_dir_all(mc.join("items")).unwrap();
+        pomme_vfs::create_dir_all(mc.join("models/item")).unwrap();
         let write = |path: &str, json: &str| std::fs::write(mc.join(path), json).unwrap();
         write(
             "items/thing.json",

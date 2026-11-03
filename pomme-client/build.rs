@@ -168,7 +168,38 @@ fn main() {
         let out_path = Path::new(&out_dir).join(&out_name);
         fs::write(&out_path, artifact.as_binary_u8())
             .unwrap_or_else(|e| panic!("failed to write {}: {e}", out_path.display()));
+
+        let wgsl = spirv_to_wgsl(artifact.as_binary_u8())
+            .unwrap_or_else(|e| panic!("failed to convert {file} to WGSL: {e}"));
+        let wgsl_path = Path::new(&out_dir).join(format!("{file}.wgsl"));
+        fs::write(&wgsl_path, wgsl)
+            .unwrap_or_else(|e| panic!("failed to write {}: {e}", wgsl_path.display()));
     }
+}
+
+/// Translates a Vulkan-flavoured SPIR-V module to WGSL. Push constants stay
+/// `var<immediate>`, which the wgpu backend maps itself (see
+/// `crates/wgpu/PUSH_CONSTANTS.md`).
+fn spirv_to_wgsl(spirv: &[u8]) -> Result<String, String> {
+    use naga::valid::{Capabilities, ValidationFlags, Validator};
+
+    let mut module = naga::front::spv::parse_u8_slice(spirv, &naga::front::spv::Options::default())
+        .map_err(|e| format!("SPIR-V parse error: {e}"))?;
+
+    for (_, global) in module.global_variables.iter_mut() {
+        // WGSL has no write-only storage buffers.
+        if let naga::AddressSpace::Storage { access } = &mut global.space
+            && !access.contains(naga::StorageAccess::LOAD)
+        {
+            *access |= naga::StorageAccess::LOAD;
+        }
+    }
+
+    let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+        .validate(&module)
+        .map_err(|e| format!("validation error: {e:?}"))?;
+    naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())
+        .map_err(|e| format!("WGSL write error: {e}"))
 }
 
 /// Deflates every block data table into `OUT_DIR/block-data/`, which

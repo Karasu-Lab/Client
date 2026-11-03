@@ -687,7 +687,7 @@ fn item_definition_names(
         .map(|dir| dir.join("assets"));
     std::iter::once(jar_assets_dir.to_path_buf())
         .chain(pack_dirs)
-        .filter_map(|root| std::fs::read_dir(root.join("minecraft").join("items")).ok())
+        .filter_map(|root| pomme_vfs::read_dir(root.join("minecraft").join("items")).ok())
         .flatten()
         .flatten()
         .filter_map(|entry| {
@@ -948,7 +948,7 @@ pub fn bake_item_models(
         let item_asset_key = format!("minecraft/items/{item_name}.json");
         let item_path =
             resolve_asset_path_with_packs(jar_assets_dir, asset_index, &item_asset_key, packs);
-        let Ok(contents) = std::fs::read_to_string(item_path) else {
+        let Ok(contents) = pomme_vfs::read_to_string(item_path) else {
             continue;
         };
         let Ok(json): Result<serde_json::Value, _> = serde_json::from_str(&contents) else {
@@ -1584,7 +1584,7 @@ fn for_each_blockstate(
         return;
     };
 
-    let entries = match std::fs::read_dir(&blockstates_dir) {
+    let entries = match pomme_vfs::read_dir(&blockstates_dir) {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!("Failed to read blockstates dir: {e}");
@@ -1601,7 +1601,7 @@ fn for_each_blockstate(
             continue;
         }
 
-        let Ok(contents) = std::fs::read_to_string(&path) else {
+        let Ok(contents) = pomme_vfs::read_to_string(&path) else {
             continue;
         };
         let Ok(blockstate) = serde_json::from_str::<BlockstateFile>(&contents) else {
@@ -1624,14 +1624,14 @@ fn resolve_blockstates_dir(
     ];
 
     for c in &candidates {
-        if c.is_dir() {
+        if pomme_vfs::is_dir(&c) {
             return Some(c.clone());
         }
     }
 
     // Also check the original simple path
     let path = jar_assets_dir.join("minecraft/blockstates");
-    if path.is_dir() {
+    if pomme_vfs::is_dir(&path) {
         return Some(path);
     }
 
@@ -1642,7 +1642,7 @@ fn resolve_blockstates_dir(
             "minecraft/blockstates/stone.json",
             packs,
         );
-        if test_path.exists() {
+        if pomme_vfs::exists(&test_path) {
             return test_path.parent().map(|p| p.to_path_buf());
         }
     }
@@ -1780,7 +1780,7 @@ fn load_model<'a>(
     let asset_key = model_id_to_asset_key(model_id);
     let file_path = resolve_model_path(jar_assets_dir, asset_index, &asset_key, packs)?;
 
-    let contents = std::fs::read_to_string(&file_path).ok()?;
+    let contents = pomme_vfs::read_to_string(&file_path).ok()?;
     let model: ModelFile = match serde_json::from_str(&contents) {
         Ok(model) => model,
         Err(error) => {
@@ -1800,13 +1800,13 @@ fn resolve_model_path(
     packs: Option<&crate::resource_pack::ResourcePackManager>,
 ) -> Option<PathBuf> {
     let primary = resolve_asset_path_with_packs(jar_assets_dir, asset_index, asset_key, packs);
-    if primary.exists() {
+    if pomme_vfs::exists(&primary) {
         return Some(primary);
     }
 
     let ref_path = Path::new("reference/assets/assets")
         .join(asset_key.strip_prefix("minecraft/").unwrap_or(asset_key));
-    if ref_path.exists() {
+    if pomme_vfs::exists(&ref_path) {
         return Some(ref_path);
     }
 
@@ -3027,8 +3027,8 @@ mod tests {
         let jar = root.join("jar");
         let items = jar.join("minecraft/items");
         let models = jar.join("minecraft/models/item");
-        std::fs::create_dir_all(&items).unwrap();
-        std::fs::create_dir_all(&models).unwrap();
+        pomme_vfs::create_dir_all(&items).unwrap();
+        pomme_vfs::create_dir_all(&models).unwrap();
         std::fs::write(
             items.join("holey.json"),
             r#"{"model":{"type":"minecraft:model","model":"minecraft:item/holey"}}"#,
@@ -3088,7 +3088,7 @@ mod tests {
     fn resolved_model_inherits_gui_transform() {
         let root = test_temp_dir("item_gui_transform");
         let models = root.join("minecraft/models/block");
-        std::fs::create_dir_all(&models).unwrap();
+        pomme_vfs::create_dir_all(&models).unwrap();
         std::fs::write(
             models.join("child.json"),
             r#"{"parent":"minecraft:block/parent"}"#,
@@ -3117,10 +3117,10 @@ mod tests {
         let models = jar.join("minecraft/models/item");
         let pack_items = instance.join("resourcepacks/test_pack/assets/minecraft/items");
         let pack_models = instance.join("resourcepacks/test_pack/assets/other/models/item");
-        std::fs::create_dir_all(&items).unwrap();
-        std::fs::create_dir_all(&models).unwrap();
-        std::fs::create_dir_all(&pack_items).unwrap();
-        std::fs::create_dir_all(&pack_models).unwrap();
+        pomme_vfs::create_dir_all(&items).unwrap();
+        pomme_vfs::create_dir_all(&models).unwrap();
+        pomme_vfs::create_dir_all(&pack_items).unwrap();
+        pomme_vfs::create_dir_all(&pack_models).unwrap();
         std::fs::write(
             instance.join("resourcepacks/test_pack/pack.mcmeta"),
             r#"{"pack":{"pack_format":84,"description":"test"}}"#,
@@ -3188,7 +3188,7 @@ mod tests {
     fn bare_face_texture_slot_matches_vanilla_texture_slots() {
         let root = test_temp_dir("bare_texture_slot");
         let models = root.join("minecraft/models/block");
-        std::fs::create_dir_all(&models).unwrap();
+        pomme_vfs::create_dir_all(&models).unwrap();
         std::fs::write(
             models.join("test_core.json"),
             r#"{

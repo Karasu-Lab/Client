@@ -616,7 +616,7 @@ async fn config_sequence(
                     received_dialog_tags = Some(tags);
                 }
                 if let Some(tags) =
-                    registry_tags(&p.tags, &super::environment_wire::TIMELINE_REGISTRY.into())
+                    registry_tags(&p.tags, &crate::world::environment_wire::TIMELINE_REGISTRY.into())
                 {
                     received_timeline_tags = Some(tags);
                 }
@@ -673,7 +673,7 @@ async fn config_sequence(
                     // TODO: timeline tags resent without registry data
                     // keep the previous resolution.
                     _ => {
-                        super::environment_wire::resolve_timeline_tags(
+                        crate::world::environment_wire::resolve_timeline_tags(
                             &mut registry_holder,
                             &received_timeline_tags.unwrap_or_default(),
                         );
@@ -739,102 +739,7 @@ async fn config_sequence(
     }
 }
 
-/// The synced biome registry, in protocol-id order.
-pub(crate) fn biome_registry(
-    holder: &azalea_core::registry_holder::RegistryHolder,
-) -> Option<&azalea_core::registry_holder::RegistryType<simdnbt::owned::NbtCompound>> {
-    holder
-        .extra
-        .get(&azalea_registry::identifier::Identifier::new(
-            "minecraft:worldgen/biome",
-        ))
-}
-
-/// How many biomes chunk sections can name.
-pub(crate) fn biome_count(holder: &azalea_core::registry_holder::RegistryHolder) -> usize {
-    biome_registry(holder).map_or(0, |registry| registry.map.len())
-}
-
-fn extract_biome_climate(
-    holder: &azalea_core::registry_holder::RegistryHolder,
-) -> std::collections::HashMap<u32, crate::renderer::chunk::mesher::BiomeClimate> {
-    use crate::renderer::chunk::mesher::{BiomeClimate, GrassColorModifier, int_to_rgb};
-
-    let mut result = std::collections::HashMap::new();
-    if let Some(registry) = biome_registry(holder) {
-        for (id, (_, nbt)) in registry.map.iter().enumerate() {
-            let temp = nbt_float(nbt, "temperature").unwrap_or(0.8);
-            let downfall = nbt_float(nbt, "downfall").unwrap_or(0.4);
-
-            let effects = nbt.get("effects").and_then(|v| match v {
-                simdnbt::owned::NbtTag::Compound(c) => Some(c),
-                _ => None,
-            });
-
-            let grass_color_override = effects
-                .and_then(|e| nbt_color_from_compound(e, "grass_color"))
-                .map(int_to_rgb);
-
-            let foliage_color_override = effects
-                .and_then(|e| nbt_color_from_compound(e, "foliage_color"))
-                .map(int_to_rgb);
-
-            let dry_foliage_color_override = effects
-                .and_then(|e| nbt_color_from_compound(e, "dry_foliage_color"))
-                .map(int_to_rgb);
-
-            let water_color = effects
-                .and_then(|e| nbt_color_from_compound(e, "water_color"))
-                .map(int_to_rgb)
-                .unwrap_or_else(|| int_to_rgb(0x3F76E4));
-
-            let grass_color_modifier = effects
-                .and_then(|e| nbt_string_from_compound(e, "grass_color_modifier"))
-                .map(|s| match s.as_str() {
-                    "dark_forest" => GrassColorModifier::DarkForest,
-                    "swamp" => GrassColorModifier::Swamp,
-                    _ => GrassColorModifier::None,
-                })
-                .unwrap_or(GrassColorModifier::None);
-
-            result.insert(
-                id as u32,
-                BiomeClimate {
-                    temperature: temp,
-                    downfall,
-                    grass_color_override,
-                    grass_color_modifier,
-                    foliage_color_override,
-                    dry_foliage_color_override,
-                    water_color,
-                },
-            );
-        }
-    }
-    tracing::info!("Extracted {} biome climate entries", result.len());
-    result
-}
-
-fn nbt_float(nbt: &simdnbt::owned::NbtCompound, key: &str) -> Option<f32> {
-    nbt.get(key).and_then(|v| match v {
-        simdnbt::owned::NbtTag::Float(f) => Some(*f),
-        simdnbt::owned::NbtTag::Double(d) => Some(*d as f32),
-        _ => None,
-    })
-}
-
-fn nbt_color_from_compound(compound: &simdnbt::owned::NbtCompound, key: &str) -> Option<i32> {
-    compound.get(key).and_then(|v| match v {
-        simdnbt::owned::NbtTag::Int(i) => Some(*i),
-        simdnbt::owned::NbtTag::Long(l) => Some(*l as i32),
-        simdnbt::owned::NbtTag::String(s) => {
-            let s = s.to_string();
-            let hex = s.strip_prefix('#').unwrap_or(&s);
-            i32::from_str_radix(hex, 16).ok()
-        }
-        _ => None,
-    })
-}
+pub(crate) use crate::world::registry_wire::{biome_count, biome_registry, extract_biome_climate};
 
 pub(super) fn chat_types_from_registry_holder(
     holder: &azalea_core::registry_holder::RegistryHolder,
@@ -907,13 +812,6 @@ fn forward_tags(event_tx: &Sender<NetworkEvent>, tags: &azalea_protocol::common:
         .map(|tag| (tag.name.to_string(), tag.elements.clone()))
         .collect();
     send_ordered(event_tx, NetworkEvent::BlockTags { tags });
-}
-
-fn nbt_string_from_compound(compound: &simdnbt::owned::NbtCompound, key: &str) -> Option<String> {
-    compound.get(key).and_then(|v| match v {
-        simdnbt::owned::NbtTag::String(s) => Some(s.to_string()),
-        _ => None,
-    })
 }
 
 struct GameLoopArgs {

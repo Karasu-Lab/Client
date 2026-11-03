@@ -24,7 +24,7 @@ layout(location = 4) out vec3 v_fog_color;
 layout(location = 5) flat out vec4 v_world_light;
 
 void main() {
-    vec4 world_pos = model * vec4(position, 1.0);
+    vec4 world_pos = instance_model() * vec4(position, 1.0);
     vec3 rel = world_pos.xyz - camera_pos.xyz;
     gl_Position = view_proj * vec4(rel, 1.0);
     v_tex_coords = tex_coords;

@@ -164,6 +164,11 @@ pub fn update_menu(
         core.menu.available_packs = core.resource_packs.available_local_packs().to_vec();
     }
 
+    if let Some((name, by)) = core.menu.pack_move.take() {
+        core.resource_packs.move_pack(&name, by);
+        core.menu.active_packs = core.resource_packs.active_pack_info();
+    }
+
     if core.menu.reload_assets {
         core.reload_pack_assets(&mut gfx.renderer);
     }

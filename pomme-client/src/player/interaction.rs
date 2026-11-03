@@ -3,10 +3,9 @@ use std::collections::HashMap;
 use azalea_block::BlockState;
 use azalea_inventory::ItemStackData;
 use azalea_inventory::components::{
-    BlocksAttacks, ChargedProjectiles, Consumable, Equippable, Food, ItemUseAnimation,
-    KineticWeapon, MinimumAttackCharge, UseEffects,
+    BlocksAttacks, Consumable, Equippable, Food, ItemUseAnimation, KineticWeapon,
+    MinimumAttackCharge, UseEffects,
 };
-use azalea_inventory::default_components::{DefaultableComponent, get_default_component};
 use azalea_protocol::packets::game::ServerboundGamePacket;
 pub use azalea_protocol::packets::game::s_interact::InteractionHand;
 use azalea_protocol::packets::game::s_player_action::{Action, ServerboundPlayerAction};
@@ -18,6 +17,7 @@ use azalea_registry::builtin::{EntityKind, ItemKind};
 use glam::{DVec3, Vec3};
 use pomme_protocol::wire;
 
+use super::stack::{is_charged_crossbow, stack_component};
 use crate::app::input::{self, InputState};
 use crate::attribute::{AttributeKind, AttributeMap};
 use crate::audio::{AudioEngine, CATEGORY_BLOCKS, CATEGORY_PLAYERS, SoundRef};
@@ -1790,22 +1790,6 @@ fn hand_render_selection(
     HandRenderSelection::BOTH
 }
 
-/// Vanilla `ItemInHandRenderer.isChargedCrossbow` / `CrossbowItem.isCharged`.
-pub(crate) fn is_charged_crossbow(stack: &ItemStackData) -> bool {
-    stack.kind == ItemKind::Crossbow
-        && stack_component::<ChargedProjectiles>(stack).is_some_and(|c| !c.items.is_empty())
-}
-
-/// The stack's component override if the server set one, else the item's
-/// default.
-fn stack_component<T: DefaultableComponent + Clone>(stack: &ItemStackData) -> Option<T> {
-    stack
-        .component_patch
-        .get::<T>()
-        .cloned()
-        .or_else(|| get_default_component::<T>(stack.kind))
-}
-
 /// Vanilla `Consumable.emitParticlesAndSounds`: the shared bite / final-gulp
 /// burst of item crumbs plus the consume sound. The sound plays locally here
 /// and again from the server's broadcast, doubling up for the eater exactly
@@ -2119,6 +2103,7 @@ mod tests {
     #[test]
     fn hand_render_selection_matches_vanilla() {
         use azalea_inventory::ItemStack;
+        use azalea_inventory::components::ChargedProjectiles;
 
         let stack = |kind| ItemStackData::new(kind, 1);
         let charged = ItemStack::new(ItemKind::Crossbow, 1)

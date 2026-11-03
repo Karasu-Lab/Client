@@ -1901,7 +1901,22 @@ impl MainMenu {
             } else {
                 WHITE
             };
-            if push_entry(
+            // The arrows sit at the right edge and take the click before the
+            // row does; the list runs from the lowest priority to the highest.
+            let arrow_w = 14.0 * gs;
+            let arrow_h = (entry_h - 4.0 * gs) / 2.0;
+            let arrow_x = right_x + list_w - arrow_w - 4.0 * gs;
+            let arrow_rects = [
+                (arrow_x, ey + 2.0 * gs, "^", -1),
+                (arrow_x, ey + 2.0 * gs + arrow_h, "v", 1),
+            ]
+            .map(|(x, y, label, by)| (x, y, label, by, i as isize + by));
+            let arrow_clicked = arrow_rects.iter().find(|&&(x, y, _, _, target)| {
+                clicked
+                    && (0..selected.len() as isize).contains(&target)
+                    && common::hit_test(cursor, [x, y, arrow_w, arrow_h])
+            });
+            let row_clicked = push_entry(
                 &mut elements,
                 &mut any_hovered,
                 right_x,
@@ -1911,8 +1926,27 @@ impl MainMenu {
                 name_color,
                 pack.compat,
                 !is_server,
-            ) && clicked
-            {
+            );
+            for &(x, y, text, _, target) in &arrow_rects {
+                let enabled = (0..selected.len() as isize).contains(&target);
+                any_hovered |= common::push_button(
+                    &mut elements,
+                    cursor,
+                    x,
+                    y,
+                    arrow_w,
+                    arrow_h,
+                    gs,
+                    small_fs,
+                    text,
+                    enabled,
+                );
+            }
+            if let Some(&(.., by, _)) = arrow_clicked {
+                // "^" is up the list, towards the lower priority.
+                self.pack_move = Some((pack.name.clone(), by));
+                self.reload_assets = true;
+            } else if row_clicked && clicked && !is_server {
                 self.pack_toggle = Some((pack.name.clone(), false));
                 self.reload_assets = true;
             }

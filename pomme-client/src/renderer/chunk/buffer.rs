@@ -304,7 +304,7 @@ pub(crate) fn build_meta(
     chunk_visibility: Option<&HashMap<ChunkPos, u32>>,
     fade_enabled: bool,
     eye: DVec3,
-    now: std::time::Instant,
+    now: crate::clock::Instant,
     out: &mut Vec<ChunkMeta>,
 ) {
     out.clear();
@@ -398,7 +398,7 @@ pub(crate) struct SectionAlloc {
     idx_len: u32,
     vertex_offset: i32,
     vtx_len: u32,
-    uploaded_at: std::time::Instant,
+    uploaded_at: crate::clock::Instant,
     /// Upload epoch this section's geometry came from; an older upload is
     /// rejected. See [`ChunkMeshData::upload_epoch`].
     epoch: u64,
@@ -416,7 +416,7 @@ impl ChunkAlloc {
         pos: ChunkPos,
         min_y: i32,
         section_indices: impl IntoIterator<Item = i32>,
-        uploaded_at: std::time::Instant,
+        uploaded_at: crate::clock::Instant,
     ) -> Self {
         let sections = section_indices
             .into_iter()
@@ -469,7 +469,7 @@ pub struct ChunkBufferStore {
     /// End of the current fade-in window. While `now < fade_until` the
     /// per-section fade values change each frame, so `cached_meta` must be
     /// rebuilt; an O(1) check replacing the old all-sections scan.
-    fade_until: std::time::Instant,
+    fade_until: crate::clock::Instant,
     /// Eye position at the last front-to-back sort; the sort (an early-Z
     /// optimization) is only redone once the camera moves past a threshold.
     last_sort_cam: DVec3,
@@ -602,7 +602,7 @@ impl ChunkBufferStore {
             chunks: HashMap::new(),
             chunk_visibility: HashMap::new(),
             meta_dirty: true,
-            fade_until: std::time::Instant::now(),
+            fade_until: crate::clock::Instant::now(),
             last_sort_cam: DVec3::MAX,
             compute_pipeline,
             compute_layout,
@@ -893,7 +893,7 @@ impl ChunkBufferStore {
                 }
             }
 
-            let now = std::time::Instant::now();
+            let now = crate::clock::Instant::now();
             let new_sections = plans.iter().map(|p| SectionAlloc {
                 section_index: p.section_index,
                 aabb: p.aabb,
@@ -1115,7 +1115,7 @@ impl ChunkBufferStore {
             return;
         }
 
-        let now = std::time::Instant::now();
+        let now = crate::clock::Instant::now();
         // Re-sort only once the camera moves ~8 blocks; front-to-back order is an
         // early-Z optimization, so finer staleness is harmless.
         const SORT_RECAM_SQ: f64 = 64.0;
@@ -1214,7 +1214,7 @@ impl ChunkBufferStore {
                 None,
                 self.fade_enabled,
                 eye,
-                std::time::Instant::now(),
+                crate::clock::Instant::now(),
                 &mut shadow.meta,
             );
             shadow.upload_pending = MAX_FRAMES_IN_FLIGHT as u32;
@@ -1291,7 +1291,7 @@ impl ChunkBufferStore {
     /// the rest ramp over [`FADE_DURATION_MS`] from their upload time. Drives
     /// both the opaque indirect meta and the water pass so they fade in
     /// together.
-    fn section_visibility(nearby: bool, sec: &SectionAlloc, now: std::time::Instant) -> f32 {
+    fn section_visibility(nearby: bool, sec: &SectionAlloc, now: crate::clock::Instant) -> f32 {
         if nearby {
             return 1.0;
         }
@@ -1328,7 +1328,7 @@ impl ChunkBufferStore {
         pass.set_vertex_buffer(0, self.vertex_buffer.handle());
         pass.set_index_buffer(self.index_buffer.handle());
 
-        let now = std::time::Instant::now();
+        let now = crate::clock::Instant::now();
         for (pos, alloc) in self.chunks.iter() {
             let col_vis = self.chunk_visibility.get(pos).copied().unwrap_or(u32::MAX);
             let nearby = column_nearby(self.fade_enabled, *pos, eye);
@@ -1572,9 +1572,10 @@ impl DrawList {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use super::*;
+    use crate::clock::Instant;
 
     #[test]
     fn build_meta_masks_fades_and_sorts_front_to_back() {

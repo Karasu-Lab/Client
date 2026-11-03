@@ -27,13 +27,13 @@ layout(location = 4) out vec3 v_fog_color;
 layout(location = 5) flat out vec4 v_world_light;
 
 void main() {
-    vec4 world_pos = model * vec4(position, 1.0);
+    vec4 world_pos = instance_model() * vec4(position, 1.0);
     vec3 rel = world_pos.xyz - camera_pos.xyz;
     gl_Position = view_proj * vec4(rel, 1.0);
 
     // Vanilla's VertexConsumer transforms the baked quad direction by the
     // item's normal matrix before item.vsh applies Lighting.Entry.LEVEL.
-    vec3 world_normal = normalize(normal_matrix * normal_packed.xyz);
+    vec3 world_normal = normalize(instance_normal_matrix() * normal_packed.xyz);
 
     v_tex_coords = tex_coords;
     v_light = mix_light(level_light(world_normal, camera_block.w != 0));

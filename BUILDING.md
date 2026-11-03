@@ -25,6 +25,13 @@ themselves up to date.
 Before building, you must have [just](https://github.com/casey/just) installed.
 The Rust toolchain is pinned in `rust-toolchain.toml`; rustup picks it up.
 
+This workspace is not self-contained: `pomme-client` depends on the
+`wgpu`, `thread`, `ui`, `debugger`, `settings`, `resourcepack` and `utils`
+crates of [BlockWorldRenderer](https://github.com/Karasu-Lab/BlockWorldRenderer)
+by the relative path `../../../crates/<name>`, so every `pomme-client`
+build — the client as well as the web viewer — requires this repository to
+be checked out at `third_party/Client` of a BlockWorldRenderer checkout.
+
 ## Building the client
 
 Requires the [Vulkan SDK](https://vulkan.lunarg.com/) and Python (to stage
@@ -128,6 +135,35 @@ An early arm64 build with touch controls; setup and limitations are in
 
 An early iPhone and iPad build with the same touch controls, plus TestFlight
 archives; setup and limitations are in [`pomme-ios/README.md`](pomme-ios/README.md).
+
+### The web viewer
+
+`pomme-client` builds without its `game` feature as the viewer: the renderer,
+mesher and the data they read, with no connections, accounts, audio or Discord.
+It draws through the wgpu backend, which WebGPU runs in the browser.
+
+```sh
+cargo check -p pomme-client --no-default-features --features wgpu
+RUSTFLAGS='--cfg getrandom_backend="wasm_js" -C target-feature=+atomics,+bulk-memory,+mutable-globals' \
+  cargo check -p pomme-client --no-default-features --features wgpu \
+  --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort
+```
+
+The atomics flags and `-Zbuild-std` are for the Web Worker threads (`thread`
+crate); the page must be cross-origin isolated (COOP/COEP). Inside the
+BlockWorldRenderer dev shell, set `RUSTFLAGS` with `env` after `nix develop -c`,
+since the shell sets its own.
+
+As noted above, this workspace is not self-contained: `pomme-client/Cargo.toml`
+depends on the `wgpu`, `thread`, `ui`, `debugger`, `settings`, `resourcepack`
+and `utils` crates of
+[BlockWorldRenderer](https://github.com/Karasu-Lab/BlockWorldRenderer) by the
+relative path `../../../crates/<name>`, so it builds only with this repository
+checked out at `third_party/Client` of that one. `wgpu` is `default-features =
+false`, which gives the Vulkan backend the shared descriptor types alone; the
+`wgpu` feature turns its `backend` on. The azalea crates that wasm32 needs
+patched (`azalea-auth`, `azalea-registry`) are vendored in `third_party/vendor`,
+and the `[patch]` tables point at them.
 
 ## Development commands
 

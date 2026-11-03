@@ -7,6 +7,7 @@ use super::pipelines::menu_overlay::MenuOverlayPipeline;
 use super::{RendererError, rhi};
 use crate::ui::font::FontSources;
 
+#[cfg(feature = "game")]
 pub struct BootScreen {
     menu: MenuOverlayPipeline,
     swapchain: rhi::backend::Swapchain,
@@ -15,13 +16,15 @@ pub struct BootScreen {
     ctx: rhi::backend::Context,
 }
 
+#[cfg(feature = "game")]
 impl BootScreen {
     pub fn new(
         window: &Window,
         font_sources: FontSources<'_>,
         vsync: bool,
     ) -> Result<Self, RendererError> {
-        let (ctx, swapchain, frames, menu) = bring_up(window, font_sources, None, vsync)?;
+        let ctx = rhi::backend::Context::new(window)?;
+        let (ctx, swapchain, frames, menu) = bring_up(ctx, window, font_sources, None, vsync)?;
         Ok(Self {
             menu,
             swapchain,
@@ -62,6 +65,7 @@ impl BootScreen {
 /// and its frames, and the menu overlay (title, bars and text), with the
 /// window then shown.
 pub(super) fn bring_up(
+    ctx: rhi::backend::Context,
     window: &Window,
     font_sources: FontSources<'_>,
     bedrock_ui_dir: Option<&std::path::Path>,
@@ -75,7 +79,6 @@ pub(super) fn bring_up(
     ),
     RendererError,
 > {
-    let ctx = rhi::backend::Context::new(window)?;
     let size = window.inner_size();
     let swapchain =
         rhi::backend::Swapchain::new(&ctx, size.width.max(1), size.height.max(1), vsync)?;
@@ -93,6 +96,7 @@ pub(super) fn bring_up(
     Ok((ctx, swapchain, frames, menu))
 }
 
+#[cfg(feature = "game")]
 impl Drop for BootScreen {
     fn drop(&mut self) {
         self.ctx.device.wait_idle();

@@ -78,7 +78,7 @@ pub const POMME_EDITION_PNG: &[u8] = include_bytes!(concat!(
 
 pub fn load_image(path: &Path) -> Result<image::DynamicImage, image::ImageError> {
     image::open(path).or_else(|_| {
-        let data = std::fs::read(path).map_err(image::ImageError::IoError)?;
+        let data = pomme_vfs::read(path).map_err(image::ImageError::IoError)?;
         image::load_from_memory(&data)
     })
 }
@@ -100,18 +100,11 @@ pub fn resource_stack_paths(
     if !checked_asset_key(asset_key) {
         return Vec::new();
     }
-    let mut stack: Vec<_> = builtin_asset(jar_assets_dir, asset_index, asset_key)
-        .into_iter()
-        .collect();
-    if let Some(packs) = packs {
-        for root in packs.active_pack_dirs() {
-            let path = root.join("assets").join(asset_key);
-            if path.is_file() {
-                stack.push(path);
-            }
-        }
+    let builtin = || builtin_asset(jar_assets_dir, asset_index, asset_key);
+    match packs {
+        Some(packs) => packs.layered_paths(asset_key, builtin),
+        None => builtin().into_iter().collect(),
     }
-    stack
 }
 
 pub fn resolve_asset_path_with_packs(
@@ -123,10 +116,12 @@ pub fn resolve_asset_path_with_packs(
     if !checked_asset_key(asset_key) {
         return jar_assets_dir.join("__invalid_asset_key__");
     }
-    packs
-        .and_then(|packs| packs.resolve_asset(asset_key))
-        .or_else(|| builtin_asset(jar_assets_dir, asset_index, asset_key))
-        .unwrap_or_else(|| jar_assets_dir.join(asset_key))
+    let builtin = || builtin_asset(jar_assets_dir, asset_index, asset_key);
+    match packs {
+        Some(packs) => packs.resolve_layered(asset_key, builtin),
+        None => builtin(),
+    }
+    .unwrap_or_else(|| jar_assets_dir.join(asset_key))
 }
 
 fn checked_asset_key(asset_key: &str) -> bool {
@@ -137,8 +132,9 @@ fn checked_asset_key(asset_key: &str) -> bool {
     valid
 }
 
-/// The jar and the asset index are one built-in pack, the index first.
-fn builtin_asset(
+/// The jar and the asset index are one built-in pack, the index first. The
+/// pack stack holds it as its lowest layer.
+pub(crate) fn builtin_asset(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     asset_key: &str,
@@ -148,7 +144,7 @@ fn builtin_asset(
         .and_then(|idx| idx.resolve(asset_key))
         .or_else(|| {
             let jar = jar_assets_dir.join(asset_key);
-            jar.is_file().then_some(jar)
+            pomme_vfs::is_file(&jar).then_some(jar)
         })
 }
 
@@ -162,7 +158,7 @@ impl AssetIndex {
     pub fn load(indexes_dir: &Path, objects_dir: &Path, version: &str) -> Option<Self> {
         let index_path = indexes_dir.join(format!("{version}.json"));
 
-        let content = std::fs::read_to_string(&index_path)
+        let content = pomme_vfs::read_to_string(&index_path)
             .map_err(|e| tracing::warn!("Failed to read asset index: {e}"))
             .ok()?;
         let parsed: serde_json::Value = serde_json::from_str(&content)
@@ -187,7 +183,7 @@ impl AssetIndex {
     pub fn resolve(&self, asset_key: &str) -> Option<PathBuf> {
         let hash = self.hashes.get(asset_key)?;
         let path = self.objects_dir.join(&hash[..2]).join(hash);
-        path.exists().then_some(path)
+        pomme_vfs::exists(&path).then_some(path)
     }
 
     pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {

@@ -1,0 +1,36 @@
+[package]
+name = "azalea-auth"
+description = "A port of Mojang's Authlib and launcher authentication."
+version = "0.16.0+mc26.2"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/azalea-rs/azalea"
+
+[dependencies]
+azalea-buf = "0.16"
+azalea-crypto = "0.16"
+base64 = "0.22.1"
+chrono = { version = "0.4.44", default-features = false, features = ["serde"] }
+indexmap = "2.14.0"
+reqwest = { version = "0.13.3", optional = true, default-features = false, features = [
+    "json",
+    "rustls",
+    "form",
+] }
+rsa = "0.10.0-rc.18"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+tokio = { version = "1.52.2", optional = true, features = ["fs"] }
+tracing = "0.1.44"
+uuid = { version = "1.23.1", features = ["serde", "v3"] }
+
+[dev-dependencies]
+env_logger = "0.11.10"
+tokio = { version = "1.52.2", features = ["full"] }
+
+[features]
+default = ["online-mode"]
+# Authentication over the network and its on-disk cache. Neither builds for the
+# browser, which only needs `game_profile`.
+online-mode = ["dep:reqwest", "dep:tokio"]

@@ -14,7 +14,6 @@ mod container_wire;
 mod dialog;
 mod entity_data;
 mod entity_wire;
-mod environment_wire;
 pub mod handler;
 pub(crate) mod http;
 mod hud_wire;

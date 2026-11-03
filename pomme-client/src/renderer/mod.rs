@@ -308,7 +308,36 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// A renderer drawing into `window`, whose GPU context is opened here.
+    /// The browser can only ask for a GPU asynchronously: there the context
+    /// comes from [`Self::with_context`].
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
+        window: Arc<Window>,
+        font_sources: FontSources<'_>,
+        game_dir: &Path,
+        cache_dir: &Path,
+        vsync: bool,
+        panorama_dir: &Path,
+        bedrock_ui_dir: &Path,
+    ) -> Result<Self, RendererError> {
+        let ctx = rhi::backend::Context::new(&*window)?;
+        Self::with_context(
+            ctx,
+            window,
+            font_sources,
+            game_dir,
+            cache_dir,
+            vsync,
+            panorama_dir,
+            bedrock_ui_dir,
+        )
+    }
+
+    /// A renderer drawing through `ctx`, which draws into `window`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_context(
+        ctx: rhi::backend::Context,
         window: Arc<Window>,
         font_sources: FontSources<'_>,
         game_dir: &Path,
@@ -327,13 +356,14 @@ impl Renderer {
             let jar_assets_dir = jar_assets_dir.to_path_buf();
             let asset_index = asset_index.clone();
             let cache_dir = cache_dir.to_path_buf();
-            std::thread::spawn(move || {
+            thread::spawn("render-assets", move || {
                 BlockRenderAssets::load(&jar_assets_dir, &asset_index, Some(&cache_dir), None)
             })
+            .expect("spawn the render assets thread")
         };
 
         let (ctx, swapchain_state, mut frames, mut menu_pipeline) =
-            boot::bring_up(&window, font_sources, Some(bedrock_ui_dir), vsync)?;
+            boot::bring_up(ctx, &window, font_sources, Some(bedrock_ui_dir), vsync)?;
         // The swapchain may pick the surface's `current_extent` rather than the
         // requested size; track that actual extent so layout matches rendering.
         let swapchain_extent = swapchain_state.extent;
@@ -546,7 +576,7 @@ impl Renderer {
             sky_pipeline,
             panorama_pipeline,
             menu_pipeline,
-            menu_blur_radius: crate::ui::menu::DEFAULT_MENU_BACKGROUND_BLURRINESS,
+            menu_blur_radius: crate::ui::scale::DEFAULT_MENU_BACKGROUND_BLURRINESS,
             entity_outline,
             post_effects,
             skin_preview,
@@ -671,7 +701,7 @@ impl Renderer {
         if self.suspended || self.swapchain_dirty || !self.swapchain.is_fifo() {
             return;
         }
-        let t_pace = std::time::Instant::now();
+        let t_pace = crate::clock::Instant::now();
         self.swapchain_dirty |= !self
             .frames
             .pace(&self.ctx, &self.swapchain, PACE_TIMEOUT_NS);
@@ -1324,6 +1354,24 @@ impl Renderer {
         &self.ctx.api_version
     }
 
+    /// What the F3 screen says about the graphics API, the GPU and its driver.
+    pub fn renderer_info(&self) -> debugger::RendererInfo {
+        #[cfg(feature = "wgpu")]
+        let driver = {
+            let info = self.ctx.adapter.get_info();
+            format!("{} {}", info.driver, info.driver_info)
+                .trim()
+                .to_owned()
+        };
+        #[cfg(not(feature = "wgpu"))]
+        let driver = String::new();
+        debugger::RendererInfo {
+            backend: self.ctx.api_version.clone(),
+            adapter: self.ctx.gpu_name.clone(),
+            driver,
+        }
+    }
+
     pub fn loaded_chunk_count(&self) -> u32 {
         self.chunk_buffers.chunk_count()
     }
@@ -1463,7 +1511,7 @@ impl Renderer {
                     model,
                     item_tints,
                     has_3d_model,
-                    charged_crossbow: crate::player::interaction::is_charged_crossbow(&stack),
+                    charged_crossbow: crate::player::stack::is_charged_crossbow(&stack),
                 }
             })
         });
@@ -1647,6 +1695,7 @@ impl Renderer {
         self.skin_preview.trigger_swing();
     }
 
+    #[cfg(feature = "game")]
     pub fn load_player_skin(&mut self, uuid: &uuid::Uuid, rt: &tokio::runtime::Runtime) {
         let uuid_str = uuid.to_string().replace('-', "");
         let skin = rt.block_on(async { fetch_skin_texture(&uuid_str).await });
@@ -1784,7 +1833,7 @@ impl Renderer {
 
         let frame = self.frames.index();
 
-        let t_fence = std::time::Instant::now();
+        let t_fence = crate::clock::Instant::now();
         self.frames.wait(&self.ctx.device)?;
         let fence_ms = t_fence.elapsed().as_secs_f32() * 1000.0;
 
@@ -1793,7 +1842,7 @@ impl Renderer {
         self.chunk_buffers.begin_frame();
         self.screenshot.collect_ready(frame, &self.ctx.device);
 
-        let t_acquire = std::time::Instant::now();
+        let t_acquire = crate::clock::Instant::now();
         let (image_index, suboptimal) =
             match self.frames.acquire(&self.ctx.device, &self.swapchain)? {
                 rhi::Acquired::Image { index, suboptimal } => (index, suboptimal),
@@ -2016,7 +2065,7 @@ impl Renderer {
         let sw = self.swapchain.extent.width as f32;
         let sh = self.swapchain.extent.height as f32;
 
-        let frame_start = std::time::Instant::now();
+        let frame_start = crate::clock::Instant::now();
 
         match &mode {
             RenderMode::World {
@@ -2068,7 +2117,7 @@ impl Renderer {
                         );
                     }
 
-                    let t_cull = std::time::Instant::now();
+                    let t_cull = crate::clock::Instant::now();
                     // A pack that failed to build leaves its vertex format until
                     // the next frame remeshes; skip those.
                     let vanilla_terrain = self.chunk_buffers.format() == TerrainFormat::Vanilla;
@@ -2376,7 +2425,7 @@ impl Renderer {
 
         self.gui_item_atlas.end_frame();
 
-        let t_present = std::time::Instant::now();
+        let t_present = crate::clock::Instant::now();
         match self
             .frames
             .submit_and_present(encoder, &self.ctx, &self.swapchain, image_index)?
@@ -2434,6 +2483,7 @@ pub(crate) struct SkinData {
     pub slim: bool,
 }
 
+#[cfg(feature = "game")]
 pub(crate) async fn fetch_skin_texture_by_name(name: &str) -> Result<SkinData, String> {
     #[derive(serde::Deserialize)]
     struct NamedProfile {
@@ -2469,6 +2519,7 @@ pub(crate) async fn fetch_skin_texture_by_name(name: &str) -> Result<SkinData, S
     fetch_skin_texture(&profile.id).await
 }
 
+#[cfg(feature = "game")]
 pub(crate) async fn fetch_skin_texture(uuid: &str) -> Result<SkinData, String> {
     #[derive(serde::Deserialize)]
     struct SessionProfile {
@@ -2509,6 +2560,7 @@ pub(crate) async fn fetch_skin_texture(uuid: &str) -> Result<SkinData, String> {
     fetch_skin_texture_from_profile_property(value).await
 }
 
+#[cfg(feature = "game")]
 pub(crate) async fn fetch_skin_texture_from_profile_property(
     value: &str,
 ) -> Result<SkinData, String> {
@@ -2522,6 +2574,7 @@ pub(crate) async fn fetch_skin_texture_from_profile_property(
     })
 }
 
+#[cfg(feature = "game")]
 fn skin_url_from_texture_property(value: &str) -> Result<(String, bool), String> {
     #[derive(serde::Deserialize)]
     struct TexturesPayload {
@@ -2601,6 +2654,7 @@ fn skin_url_from_texture_property(value: &str) -> Result<(String, bool), String>
 /// authlib's `TextureUrlChecker.isAllowedTextureDomain`: a `java.net.URI`
 /// (`parse_untrusted_url`'s rules) with a case-sensitive http(s) scheme and a
 /// host of exactly `textures.minecraft.net`.
+#[cfg(feature = "game")]
 fn is_allowed_texture_url(url: &str) -> bool {
     const HOST: &str = "textures.minecraft.net";
     if crate::chat_component::parse_untrusted_url(url.to_owned()).is_err() {
@@ -2619,6 +2673,7 @@ fn is_allowed_texture_url(url: &str) -> bool {
     matches!(scheme, "http" | "https") && host == HOST && port_ok
 }
 
+#[cfg(feature = "game")]
 async fn fetch_skin_image(skin_url: &str) -> Result<(Vec<u8>, u32, u32), String> {
     let skin_bytes = crate::net::http::get(skin_url)
         .await
@@ -2781,6 +2836,7 @@ fn entity_cull_distance(render_distance: u32) -> f32 {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "game")]
     #[test]
     fn decodes_skin_url_from_textures_property() {
         let classic = textures_property(
@@ -2805,11 +2861,13 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "game")]
     fn textures_property(payload: &str) -> String {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(payload)
     }
 
+    #[cfg(feature = "game")]
     #[test]
     fn texture_urls_follow_authlib_allow_list() {
         for ok in [
@@ -2842,6 +2900,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "game")]
     #[test]
     fn foreign_urls_and_duplicate_keys_reject_the_whole_payload() {
         for payload in [

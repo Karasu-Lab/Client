@@ -1,6 +1,11 @@
 use clap::Parser;
+use resourcepack::PackLocation;
 
 use crate::dirs::DataDirs;
+
+fn parse_pack_location(text: &str) -> Result<PackLocation, String> {
+    PackLocation::parse(text).map_err(|error| error.to_string())
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "pomme", about = "Minecraft client")]
@@ -38,6 +43,21 @@ pub struct LaunchArgs {
 
     #[arg(long)]
     pub game_dir: Option<String>,
+
+    /// The directory the resource packs are kept in; a relative one is taken
+    /// from the game directory. Defaults to `resourcepacks` there.
+    #[arg(long, value_name = "PATH", conflicts_with = "resource_pack_location")]
+    pub resource_pack_dir: Option<String>,
+
+    /// Where the resource packs are kept, as `dir:<path>`, `namespace:<name>`
+    /// (browser storage) or `url:<base>` (fetched in the browser). Overrides
+    /// `resource_pack_location.txt` in the game directory.
+    #[arg(
+        long,
+        value_name = "LOCATION",
+        value_parser = parse_pack_location
+    )]
+    pub resource_pack_location: Option<PackLocation>,
 
     #[arg(long, conflicts_with = "quick_access_singleplayer")]
     pub quick_access_multiplayer: Option<String>,
@@ -130,12 +150,23 @@ impl LaunchArgs {
     }
 
     pub fn data_dirs(&self, version: &str) -> DataDirs {
-        DataDirs::resolve(
+        let dirs = DataDirs::resolve(
             version,
             self.assets_dir.as_deref(),
             self.versions_dir.as_deref(),
             self.game_dir.as_deref(),
-        )
+        );
+        let location = self
+            .resource_pack_location
+            .clone()
+            .or_else(|| {
+                self.resource_pack_dir
+                    .as_deref()
+                    .map(|dir| PackLocation::Directory(dir.into()))
+            })
+            .or_else(|| DataDirs::saved_resource_pack_location(&dirs.game_dir))
+            .unwrap_or_default();
+        dirs.with_resource_pack_location(location)
     }
 
     /// No asset or version folder was passed. A launcher that passes them owns
