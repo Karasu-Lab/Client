@@ -109,6 +109,8 @@ pub async fn download(
             done: bytes.len() as u32,
             total,
             status: "Downloading".to_owned(),
+            file_done: bytes.len() as u64,
+            file_total: u64::from(total),
         });
     }
 
