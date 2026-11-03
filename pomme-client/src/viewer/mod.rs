@@ -22,8 +22,8 @@ use crate::entity::components::{LookDirection, Position};
 use crate::position::ChunkPos;
 use crate::renderer::chunk::mesh_columns::MeshColumns;
 use crate::renderer::chunk::mesh_source::MeshSource;
-use crate::renderer::chunk::mesher::{ChunkMeshData, MeshDispatcher};
 pub use crate::renderer::chunk::mesher::BiomeClimate;
+use crate::renderer::chunk::mesher::{ChunkMeshData, MeshDispatcher};
 use crate::renderer::chunk::occlusion_graph::{self, VisibilitySet};
 use crate::renderer::pipelines::entity_shadow::ShadowScene;
 use crate::renderer::pipelines::held_item::HandRenderSelection;
@@ -35,8 +35,8 @@ use crate::ui::font::{FontOptions, FontSources};
 use crate::world::block::block_registry::{BlockDefinitions, BlockRegistry};
 use crate::world::block::model::CardinalLightType;
 use crate::world::chunk::ChunkStore;
-use crate::world::environment::{BiomeWeights, EnvironmentProbe};
 pub use crate::world::environment::Environment;
+use crate::world::environment::{BiomeWeights, EnvironmentProbe};
 use crate::world::generated;
 use crate::world::light::{LevelLightEngine, LightDirty, LightTask, section_entries};
 
@@ -330,7 +330,8 @@ impl Viewer {
     /// Moves the camera; columns around the new position are requested
     /// from the source on the next tick.
     pub fn set_camera(&mut self, camera: ViewerCamera) {
-        self.camera_position = Position::new(camera.position[0], camera.position[1], camera.position[2]);
+        self.camera_position =
+            Position::new(camera.position[0], camera.position[1], camera.position[2]);
         self.camera_look = LookDirection::new(camera.yaw_deg, camera.pitch_deg);
         self.renderer
             .reset_camera(self.camera_position, self.camera_look);
