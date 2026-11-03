@@ -114,3 +114,46 @@ impl WorldSource for SteelWorld {
         self.world.chunk_packet(x, z)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::environment::Skybox;
+    use crate::world::generated;
+
+    /// The wires cover the viewer: the dimension, the biome count and
+    /// climate and the environment all come out of SteelMC's registries,
+    /// and a generated column's packet decodes the way the viewer loads it.
+    /// Generating a column is far too slow for the test suite, so run it
+    /// on purpose: `cargo test -p pomme-client --no-default-features
+    /// --features wgpu,steel-world steel_world -- --ignored`.
+    #[test]
+    #[ignore = "generates a full chunk"]
+    fn steel_world_covers_the_viewer() {
+        let source = SteelWorld::open(8_675_309, None).expect("the world opens");
+
+        let dimension = source.dimension();
+        assert_eq!(dimension.min_y, -64);
+        assert_eq!(dimension.height, 384);
+        assert!(dimension.has_skylight);
+
+        let biome_count = source.biome_count();
+        assert!(biome_count > 0, "the biome registry is not empty");
+        let climate = source.biome_climate();
+        assert_eq!(climate.len(), biome_count);
+        for id in 0..biome_count as u32 {
+            assert!(climate.contains_key(&id), "biome {id} has no climate");
+        }
+
+        let environment = source.environment();
+        assert_eq!(environment.skybox, Skybox::Overworld);
+        assert!(environment.has_weather);
+        assert!((environment.plains as usize) < biome_count);
+
+        let packet = source.chunk_packet(0, 0).expect("the column generates");
+        let chunk = generated::decode(&packet).expect("the packet decodes");
+        assert_eq!(chunk.pos.x, 0);
+        assert_eq!(chunk.pos.z, 0);
+        assert!(!chunk.sections.is_empty());
+    }
+}
