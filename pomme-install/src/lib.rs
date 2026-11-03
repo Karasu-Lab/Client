@@ -30,6 +30,7 @@ const CONCURRENT_DOWNLOADS: usize = 32;
 const ATTEMPTS: u32 = 3;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// GitHub's API refuses requests without one.
+#[cfg(not(target_arch = "wasm32"))]
 const USER_AGENT: &str = "pomme";
 
 /// Where an install fetches from. The defaults are Mojang's servers; a browser

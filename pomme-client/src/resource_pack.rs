@@ -74,6 +74,7 @@ pub struct ResourcePackManager {
 
 impl ResourcePackManager {
     /// Packs live in `resourcepacks` inside `instance_dir`.
+    #[cfg(test)]
     pub fn new(instance_dir: &Path) -> Self {
         Self::with_location(instance_dir, &PackLocation::Default)
     }
@@ -93,10 +94,6 @@ impl ResourcePackManager {
         };
         mgr.scan_local_packs();
         mgr
-    }
-
-    pub fn packs_dir(&self) -> &Path {
-        &self.packs_dir
     }
 
     /// The active packs, from the lowest priority to the highest; the built-in
@@ -182,17 +179,6 @@ impl ResourcePackManager {
     /// which stacked resources are registered by Vanilla.
     pub fn active_pack_dirs(&self) -> impl Iterator<Item = &Path> {
         self.packs_ascending().map(|pack| pack.dir.as_path())
-    }
-
-    /// Moves an active pack to `priority`; a higher one overrides a lower one,
-    /// and among equal priorities the pack enabled last wins. The built-in
-    /// layer stays at the bottom.
-    pub fn set_pack_priority(&mut self, id: &str, priority: i32) -> bool {
-        id != BUILTIN_ID && self.active_packs.set_priority(id, priority)
-    }
-
-    pub fn pack_priority(&self, id: &str) -> Option<i32> {
-        self.active_packs.priority(id)
     }
 
     /// Moves the pack `by` places along [`Self::active_pack_info`]'s order,
@@ -424,6 +410,7 @@ impl ResourcePackManager {
 }
 
 /// Why [`prepare_location`] could not make a pack location ready.
+#[cfg(not(feature = "game"))]
 #[derive(Debug)]
 pub enum LocationError {
     /// This platform has no such place: a base URL and a storage namespace are
@@ -433,6 +420,7 @@ pub enum LocationError {
     Storage(String),
 }
 
+#[cfg(not(feature = "game"))]
 impl std::fmt::Display for LocationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -447,6 +435,7 @@ impl std::fmt::Display for LocationError {
     }
 }
 
+#[cfg(not(feature = "game"))]
 impl std::error::Error for LocationError {}
 
 /// Makes the directory `location` resolves to ready for a
@@ -456,6 +445,7 @@ impl std::error::Error for LocationError {}
 /// is read back into the file tree, and a base URL is fetched into it (see
 /// `pomme_install::packs`), falling back on what an earlier visit stored when
 /// the fetch fails. Elsewhere those two are an error.
+#[cfg(not(feature = "game"))]
 pub async fn prepare_location(
     location: &PackLocation,
     game_dir: &Path,

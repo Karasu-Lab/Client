@@ -5,6 +5,7 @@ pub mod chunk;
 pub mod clock;
 pub mod environment;
 pub mod environment_wire;
+#[cfg(not(feature = "game"))]
 pub mod generated;
 pub mod level;
 pub mod light;

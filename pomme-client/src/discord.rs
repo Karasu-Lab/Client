@@ -84,14 +84,6 @@ pub use real::*;
 
 #[cfg(not(feature = "discord"))]
 mod stub {
-    #[derive(PartialEq)]
-    pub enum PresenceState {
-        Loading,
-        InMenu,
-        Multiplayer,
-        Singleplayer,
-    }
-
     /// Builds without the `discord` feature have no presence to report; `start`
     /// always fails and the client carries on without one.
     pub struct DiscordPresence;

@@ -2103,6 +2103,7 @@ mod tests {
     #[test]
     fn hand_render_selection_matches_vanilla() {
         use azalea_inventory::ItemStack;
+        use azalea_inventory::components::ChargedProjectiles;
 
         let stack = |kind| ItemStackData::new(kind, 1);
         let charged = ItemStack::new(ItemKind::Crossbow, 1)
