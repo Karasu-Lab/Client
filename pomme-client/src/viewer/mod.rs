@@ -180,6 +180,13 @@ pub struct Viewer {
     pending_load_rescan: bool,
 
     requested: HashSet<ChunkPos>,
+    /// Columns whose last load failed, with the frame from which they
+    /// may be requested again. A source whose data arrives over time
+    /// (a replay being played back, a save being read) must have its
+    /// failures retried; a failed column that stayed requested would
+    /// never be asked for again.
+    retry_at: HashMap<ChunkPos, u64>,
+    frames: u64,
     generated_tx: Sender<Generated>,
     generated_rx: Receiver<Generated>,
     max_in_flight: usize,
@@ -196,6 +203,9 @@ pub struct Viewer {
     stats: Rc<std::cell::RefCell<Stats>>,
     renderer_info: Rc<std::cell::RefCell<RendererInfo>>,
 }
+
+/// Frames a failed column waits before it may be requested again.
+const RETRY_FRAMES: u64 = 30;
 
 impl Viewer {
     pub fn new(
@@ -298,6 +308,8 @@ impl Viewer {
             last_vis_cam: (i32::MIN, i32::MIN, i32::MIN),
             pending_load_rescan: false,
             requested: HashSet::new(),
+            retry_at: HashMap::new(),
+            frames: 0,
             generated_tx,
             generated_rx,
             max_in_flight: (thread::available_parallelism() / 2).clamp(2, 8),
@@ -389,6 +401,9 @@ impl Viewer {
             if in_flight >= self.max_in_flight {
                 break;
             }
+            if self.retry_at.get(&pos).is_some_and(|&at| at > self.frames) {
+                continue;
+            }
             if !self.requested.insert(pos) {
                 continue;
             }
@@ -403,6 +418,15 @@ impl Viewer {
         Ok(())
     }
 
+    /// Unrequests a column whose load failed and holds it back for
+    /// [`RETRY_FRAMES`] frames, so a source that cannot serve it yet
+    /// (a replay that has not reached it, a save still being read) is
+    /// asked again instead of the column being lost.
+    fn defer_retry(&mut self, pos: ChunkPos) {
+        self.requested.remove(&pos);
+        self.retry_at.insert(pos, self.frames + RETRY_FRAMES);
+    }
+
     fn load_generated(&mut self) {
         while let Ok((pos, packet)) = self.generated_rx.try_recv() {
             let chunk = packet.and_then(|payload| generated::decode(&payload));
@@ -410,6 +434,7 @@ impl Viewer {
                 Ok(chunk) => chunk,
                 Err(error) => {
                     tracing::error!("Column [{}, {}] didn't generate: {error}", pos.x, pos.z);
+                    self.defer_retry(pos);
                     continue;
                 }
             };
@@ -422,8 +447,10 @@ impl Viewer {
                 table,
             ) {
                 tracing::error!("Failed to load chunk [{}, {}]: {error}", pos.x, pos.z);
+                self.defer_retry(pos);
                 continue;
             }
+            self.retry_at.remove(&pos);
             self.light_engine
                 .on_chunk_loaded(&mut self.chunk_store, table, (pos.x, pos.z));
             let count = self.light_engine.light_section_count();
@@ -657,6 +684,7 @@ impl Viewer {
     }
 
     pub fn frame(&mut self, dt: f32) -> Result<(), ViewerError> {
+        self.frames += 1;
         self.request_columns()?;
         self.load_generated();
         self.update_light();
