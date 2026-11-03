@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::ops::BitOr;
@@ -2127,7 +2126,6 @@ fn try_shader_module(device: &Device, spirv: &[u8]) -> Result<vk::ShaderModule, 
         .create_shader_module(&info, None)
         .map_err(|e| format!("failed to create shader module: {e:?}"))
 }
-
 
 fn read_spv<R: io::Read + io::Seek>(x: &mut R) -> io::Result<Vec<u32>> {
     let size = x.seek(io::SeekFrom::End(0))?;

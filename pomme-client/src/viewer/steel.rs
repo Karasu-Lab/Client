@@ -1,9 +1,9 @@
-
 use std::collections::HashMap;
 
 use azalea_core::registry_holder::{RegistryHolder, RegistryType};
 use azalea_registry::identifier::Identifier;
 use pomme_singleplayer::generated::GeneratedWorld;
+pub use pomme_singleplayer::generated::{PROTOCOL, ThreadSpawner, install_thread_spawner};
 use simdnbt::owned::{NbtCompound, NbtTag};
 
 use super::{Dimension, WorldSource};
@@ -11,8 +11,6 @@ use crate::renderer::chunk::mesher::BiomeClimate;
 use crate::world::block::model::CardinalLightType;
 use crate::world::environment::Environment;
 use crate::world::{environment_wire, registry_wire};
-
-pub use pomme_singleplayer::generated::{PROTOCOL, ThreadSpawner, install_thread_spawner};
 
 pub const VERSION: &str = "26.3";
 

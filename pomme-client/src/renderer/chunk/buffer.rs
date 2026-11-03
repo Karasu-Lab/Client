@@ -480,8 +480,8 @@ impl ChunkBufferStore {
             .gpu_cull
             .then(|| rhi::backend::create_bind_group_layout(device, CULL_BINDINGS));
         let camera = DrawList::new(device, cull_layout, meta_size, indirect_size);
-        let compute_layout = cull_layout
-            .map(|layout| rhi::backend::create_pipeline_layout(device, &[layout], None));
+        let compute_layout =
+            cull_layout.map(|layout| rhi::backend::create_pipeline_layout(device, &[layout], None));
 
         let compute_pipeline = compute_layout.map(|layout| {
             rhi::backend::create_compute_pipeline(

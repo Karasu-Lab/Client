@@ -1,4 +1,3 @@
-
 use std::path::{Path, PathBuf};
 
 use js_sys::{Array, Promise, Reflect, Uint8Array};
@@ -50,9 +49,7 @@ fn path_of(url: &str) -> Option<PathBuf> {
 
 pub async fn persist(namespace: &str, path: &Path) -> Result<(), String> {
     let cache = open(namespace).await?;
-    JsFuture::from(put(&cache, path)?)
-        .await
-        .map_err(js_error)?;
+    JsFuture::from(put(&cache, path)?).await.map_err(js_error)?;
     Ok(())
 }
 
@@ -99,9 +96,7 @@ pub async fn persist_dir_with(
         on_progress(done, total);
     }
     for path in last {
-        JsFuture::from(put(&cache, path)?)
-            .await
-            .map_err(js_error)?;
+        JsFuture::from(put(&cache, path)?).await.map_err(js_error)?;
         done += 1;
         on_progress(done, total);
     }

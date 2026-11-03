@@ -80,7 +80,8 @@ impl DataDirs {
         }
     }
 
-    /// Saves `location` in `game_dir` for [`Self::saved_resource_pack_location`].
+    /// Saves `location` in `game_dir` for
+    /// [`Self::saved_resource_pack_location`].
     pub fn save_resource_pack_location(
         game_dir: &Path,
         location: &PackLocation,
