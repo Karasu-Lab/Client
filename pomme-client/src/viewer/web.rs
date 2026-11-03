@@ -14,7 +14,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys};
 use winit::window::{Window, WindowId};
 
-use super::{GpuContext, Viewer, ViewerConfig, ViewerError, WorldSource};
+use super::{GpuContext, Viewer, ViewerCamera, ViewerConfig, ViewerError, WorldSource};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
@@ -44,6 +44,12 @@ impl ViewerHandle {
     pub fn set_ui_enabled(&self, enabled: bool) {
         if let Some(viewer) = self.viewer.borrow_mut().as_mut() {
             viewer.set_ui_enabled(enabled);
+        }
+    }
+
+    pub fn set_camera(&self, camera: ViewerCamera) {
+        if let Some(viewer) = self.viewer.borrow_mut().as_mut() {
+            viewer.set_camera(camera);
         }
     }
 

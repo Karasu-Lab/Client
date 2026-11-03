@@ -325,6 +325,15 @@ impl Viewer {
         self.overlay.switch_mut().set(enabled);
     }
 
+    /// Moves the camera; columns around the new position are requested
+    /// from the source on the next tick.
+    pub fn set_camera(&mut self, camera: ViewerCamera) {
+        self.camera_position = Position::new(camera.position[0], camera.position[1], camera.position[2]);
+        self.camera_look = LookDirection::new(camera.yaw_deg, camera.pitch_deg);
+        self.renderer
+            .reset_camera(self.camera_position, self.camera_look);
+    }
+
     pub fn toggle_debug_screen(&mut self) -> bool {
         self.debug.switch_mut().toggle()
     }
