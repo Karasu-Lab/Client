@@ -155,8 +155,7 @@ impl GeneratedWorld {
             path: block.key.path.to_string(),
             properties: REGISTRY
                 .blocks
-                .get_properties(id)
-                .into_iter()
+                .properties(id)
                 .map(|(name, value)| (name.to_owned(), value.to_owned()))
                 .collect(),
         })

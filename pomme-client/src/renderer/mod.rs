@@ -2836,6 +2836,7 @@ fn entity_cull_distance(render_distance: u32) -> f32 {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "game")]
     #[test]
     fn decodes_skin_url_from_textures_property() {
         let classic = textures_property(
@@ -2860,11 +2861,13 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "game")]
     fn textures_property(payload: &str) -> String {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(payload)
     }
 
+    #[cfg(feature = "game")]
     #[test]
     fn texture_urls_follow_authlib_allow_list() {
         for ok in [
@@ -2897,6 +2900,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "game")]
     #[test]
     fn foreign_urls_and_duplicate_keys_reject_the_whole_payload() {
         for payload in [

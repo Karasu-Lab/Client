@@ -1403,6 +1403,7 @@ mod binding_lookup_tests {
         assert!(!input.action_just_pressed(Action::OpenMenu));
     }
 
+    #[cfg(feature = "game")]
     #[test]
     fn configured_enter_close_precedes_menu_activation() {
         use crate::ui::menu::MenuInput;
