@@ -3,8 +3,8 @@
 use simdnbt::ToNbtTag;
 use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
 use steel_core::headless::HeadlessWorld;
-use steel_registry::{REGISTRY, RegistryExt, TaggedRegistryExt};
 pub use steel_registry::packets::CURRENT_MC_PROTOCOL as PROTOCOL;
+use steel_registry::{REGISTRY, RegistryExt, TaggedRegistryExt};
 pub use steel_utils::threading::{ThreadSpawner, install_thread_spawner};
 use steel_utils::{BlockStateId, ChunkPos, Identifier};
 

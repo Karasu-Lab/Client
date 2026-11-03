@@ -1,14 +1,7 @@
-//! Small shared utilities.
-
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// Java `java.util.Random` (`LegacyRandomSource`) reimplementation: a 48-bit
-/// LCG matching the JVM bit-for-bit so seeded sequences line up with vanilla.
-///
-/// TODO: `renderer/pipelines/{weather,sky}.rs` and `renderer/chunk/mesher.rs`
-/// each carry a private copy of this; unify them onto this type.
 pub struct JavaRandom {
     seed: u64,
 }
@@ -24,8 +17,6 @@ impl JavaRandom {
         rng
     }
 
-    /// A time-seeded instance, for vanilla's unseeded `RandomSource.create()`
-    /// uses where the exact sequence doesn't matter.
     pub fn from_time() -> Self {
         let nanos = crate::clock::SystemTime::now()
             .duration_since(crate::clock::UNIX_EPOCH)
@@ -34,7 +25,6 @@ impl JavaRandom {
         Self::new(nanos)
     }
 
-    /// Matches `Random.setSeed`: scrambles with the multiplier before use.
     pub fn set_seed(&mut self, seed: i64) {
         self.seed = (seed as u64 ^ Self::MULTIPLIER) & Self::MASK;
     }
@@ -48,12 +38,10 @@ impl JavaRandom {
         (self.seed >> (48 - bits)) as i32
     }
 
-    /// Matches `Random.nextFloat`: `next(24) / 2^24`, in `[0, 1)`.
     pub fn next_float(&mut self) -> f32 {
         self.next(24) as f32 / (1u32 << 24) as f32
     }
 
-    /// Matches `Random.nextInt(int)`, in `[0, bound)`.
     pub fn next_int(&mut self, bound: i32) -> i32 {
         assert!(bound > 0);
         if bound & (bound - 1) == 0 {
@@ -62,7 +50,6 @@ impl JavaRandom {
         loop {
             let bits = self.next(31);
             let val = bits % bound;
-            // Java relies on int overflow here to reject biased samples.
             if bits.wrapping_sub(val).wrapping_add(bound - 1) >= 0 {
                 return val;
             }
@@ -70,14 +57,14 @@ impl JavaRandom {
     }
 }
 
-/// Writes `bytes` to a temp sibling and renames it over `path`, so a reader
-/// only ever sees the old or the new file, never a truncated one. No fsync,
-/// like vanilla `Options.save`.
+#[cfg(target_arch = "wasm32")]
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    // Write through a symlink instead of replacing it with a plain file.
+    pomme_vfs::write(path, bytes)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    // Per-process name so two clients on one game dir don't truncate each
-    // other's in-flight temp file.
     let mut tmp = target.as_os_str().to_owned();
     tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
@@ -90,8 +77,6 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
-/// The Android app, for calls into its Java side (`open_url`). Replaced on
-/// each `android_main`, since a recreated activity gets a new one.
 #[cfg(target_os = "android")]
 pub static ANDROID_APP: std::sync::RwLock<Option<crate::AndroidApp>> = std::sync::RwLock::new(None);
 
@@ -109,15 +94,12 @@ pub fn open_url(url: &str) {
     }
 }
 
-/// Keeps `dir`, which holds only re-downloadable files, out of iCloud
-/// backups; it's created if missing.
 #[cfg(target_os = "ios")]
 pub fn exclude_from_backup(dir: &std::path::Path) {
     use objc2_foundation::{NSNumber, NSString, NSURL, NSURLIsExcludedFromBackupKey};
 
     let _ = std::fs::create_dir_all(dir);
     let url = NSURL::fileURLWithPath(&NSString::from_str(&dir.to_string_lossy()));
-    // SAFETY: the key's value is an `NSNumber` boolean, as Foundation expects.
     let excluded = unsafe {
         url.setResourceValue_forKey_error(
             Some(&NSNumber::new_bool(true)),
@@ -129,8 +111,6 @@ pub fn exclude_from_backup(dir: &std::path::Path) {
     }
 }
 
-/// `[UIApplication.sharedApplication openURL:]`, which opens Safari; `open`
-/// would spawn a process, which iOS doesn't allow.
 #[cfg(target_os = "ios")]
 fn open_url_ios(url: &str) -> Result<(), String> {
     use objc2_foundation::{MainThreadMarker, NSDictionary, NSString, NSURL};
@@ -139,15 +119,10 @@ fn open_url_ios(url: &str) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
     let url = NSURL::URLWithString(&NSString::from_str(url)).ok_or("not a URL")?;
     let app = UIApplication::sharedApplication(mtm);
-    // SAFETY: the options dictionary is empty and there's no completion block.
     unsafe { app.openURL_options_completionHandler(&url, &NSDictionary::new(), None) };
     Ok(())
 }
 
-/// `activity.startActivity(new Intent(ACTION_VIEW, Uri.parse(url)))`, as a
-/// Custom Tab: the browser opens over the app, which stays in the foreground,
-/// and Back returns to it. The session extra (a null binder) is all Custom
-/// Tabs needs; androidx.browser's `CustomTabsIntent` only builds this intent.
 #[cfg(target_os = "android")]
 fn open_url_android(url: &str) -> jni::errors::Result<()> {
     use jni::objects::{JObject, JValue};
@@ -156,12 +131,8 @@ fn open_url_android(url: &str) -> jni::errors::Result<()> {
     let Some(app) = ANDROID_APP.read().ok().and_then(|app| app.clone()) else {
         return Ok(());
     };
-    // SAFETY: android-activity's pointer is the process's JavaVM, alive while
-    // the app runs.
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) };
     vm.attach_current_thread(|env| {
-        // SAFETY: the activity's global reference outlives this frame, and
-        // `JObject` never deletes the reference it wraps.
         let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr().cast()) };
         let url = env.new_string(url)?;
         let uri = env
@@ -231,7 +202,6 @@ mod tests {
     #[test]
     fn write_atomic_failure_removes_temp() {
         let dir = test_temp_dir("write_atomic_failure");
-        // Renaming a file over a directory fails on every OS.
         let target = dir.join("options.json");
         fs::create_dir_all(&target).unwrap();
         assert!(write_atomic(&target, b"x").is_err());

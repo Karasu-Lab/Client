@@ -61,9 +61,9 @@ mod ui;
 mod update;
 mod user;
 mod util;
+mod version;
 #[cfg(not(feature = "game"))]
 pub mod viewer;
-mod version;
 mod world;
 
 #[cfg(feature = "game")]

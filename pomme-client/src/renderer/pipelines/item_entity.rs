@@ -11,10 +11,6 @@ use crate::renderer::pipelines::lightmap::Lightmap;
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, rhi, shader, util};
 use crate::world::block::model::{BakedModel, Direction, direction_from_positions};
 
-/// Item-only vertex format. Vanilla's ENTITY item format keeps UV0 as floats
-/// and carries a baked face normal; both matter here because generated sprite
-/// texel boundaries must line up with extrusion geometry and dropped items use
-/// the normal for two-direction diffuse lighting.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct ItemVertex {
@@ -32,18 +28,12 @@ impl ItemVertex {
 
 pub struct ItemRenderInfo {
     pub item_name: Arc<str>,
-    /// `0xRRGGBB` while the item entity glows.
     pub outline_color: Option<u32>,
-    /// Evaluated tint palette, shared by every copy of one dropped stack.
     pub tints: Arc<[u32]>,
     pub model_matrix: Mat4,
     pub light: LightLevels,
 }
 
-/// What the item-entity renderer needs to place a mesh: whether it baked from a
-/// 3D (block) model, plus its local-space bounding box used for the hover
-/// height and the 3D-vs-flat copy layout (vanilla reads these off
-/// `getModelBoundingBox`).
 #[derive(Clone, Copy)]
 pub struct ItemMeshInfo {
     pub is_block_model: bool,
@@ -55,36 +45,28 @@ struct MeshEntry {
     buffer: rhi::backend::Buffer,
     vertex_count: u32,
     is_3d_model: bool,
-    /// Vanilla `BakedQuad.MaterialInfo`: a sprite with partial alpha draws on
-    /// the translucent item sheet, everything else on the cutout one.
     translucent: bool,
     bounds_min: glam::Vec3,
     bounds_max: glam::Vec3,
 }
 
-/// The per-frame tint palette, `ItemPipelineShared::tints`.
-const ITEM_TINTS: &[rhi::BindGroupLayoutEntry] = &[rhi::BindGroupLayoutEntry::storage(
+const TINT_PALETTE_LEN: usize = 16384;
+
+const ITEM_TINTS: &[rhi::BindGroupLayoutEntry] = &[rhi::BindGroupLayoutEntry::uniform(
     rhi::ShaderStages::VERTEX,
 )];
 
-/// The item pipelines' bind groups: camera, atlas, tint palette.
 const ITEM_BIND_GROUPS: [&[rhi::BindGroupLayoutEntry]; 3] =
     [util::VERTEX_UNIFORM, util::FRAGMENT_TEXTURE, ITEM_TINTS];
 
-/// One drawn copy of an item mesh, read per instance (binding 1) by
-/// item_instance.glsl.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct ItemInstance {
     model: [f32; 16],
-    /// The inverse transpose of the model's 3x3, for the baked normals.
     normal_matrix: [f32; 9],
-    /// The light lane (`LightLevels::lane`).
     light: f32,
-    /// The copy's slice of the tint palette.
     tint_base: u32,
     tint_count: u32,
-    /// The glowing outline's `0xRRGGBB`, read only by the outline pass.
     outline_color: u32,
 }
 
@@ -110,7 +92,6 @@ impl ItemInstance {
         ),
     };
 
-    /// `normal_basis` carries the model's normals on into world space.
     fn new(
         model: &Mat4,
         normal_basis: Mat3,
@@ -130,7 +111,6 @@ impl ItemInstance {
     }
 }
 
-/// One instanced draw: `count` copies of a mesh from instance `first`.
 #[derive(Clone, Copy)]
 struct Run {
     buffer: rhi::backend::BufferHandle,
@@ -139,8 +119,6 @@ struct Run {
     count: u32,
 }
 
-/// Groups the `items` that `keep` picks into runs of adjacent copies sharing
-/// a mesh; instance `i` is item `i`, and nothing is reordered.
 fn runs<'a>(
     items: &[ItemRenderInfo],
     meshes: &'a HashMap<String, MeshEntry>,
@@ -171,25 +149,30 @@ fn runs<'a>(
         .collect()
 }
 
-/// A host buffer per frame in flight, filled from the start each frame. It
-/// only grows in `begin_frame`, before any draw reading it is recorded.
 struct FrameArena<T> {
     buffers: Vec<Option<rhi::backend::Buffer>>,
     capacities: Vec<usize>,
     cursors: Vec<usize>,
     usage: rhi::BufferUsages,
     label: String,
+    minimum: usize,
     _element: std::marker::PhantomData<T>,
 }
 
 impl<T: bytemuck::Pod> FrameArena<T> {
-    fn new(device: &rhi::backend::Device, usage: rhi::BufferUsages, label: String) -> Self {
+    fn new(
+        device: &rhi::backend::Device,
+        usage: rhi::BufferUsages,
+        label: String,
+        minimum: usize,
+    ) -> Self {
         let mut arena = Self {
             buffers: (0..MAX_FRAMES_IN_FLIGHT).map(|_| None).collect(),
             capacities: vec![0; MAX_FRAMES_IN_FLIGHT],
             cursors: vec![0; MAX_FRAMES_IN_FLIGHT],
             usage,
             label,
+            minimum,
             _element: std::marker::PhantomData,
         };
         for frame in 0..MAX_FRAMES_IN_FLIGHT {
@@ -198,8 +181,6 @@ impl<T: bytemuck::Pod> FrameArena<T> {
         arena
     }
 
-    /// Restarts `frame`'s buffer, growing it to hold `required` elements;
-    /// true if it was replaced.
     fn begin_frame(
         &mut self,
         device: &rhi::backend::Device,
@@ -207,13 +188,14 @@ impl<T: bytemuck::Pod> FrameArena<T> {
         required: usize,
     ) -> bool {
         self.cursors[frame] = 0;
-        if self.capacities[frame] >= required.max(1) {
+        let required = required.max(self.minimum).max(1);
+        if self.capacities[frame] >= required {
             return false;
         }
         if let Some(buffer) = self.buffers[frame].take() {
             buffer.destroy(device);
         }
-        self.capacities[frame] = required.max(1).next_power_of_two();
+        self.capacities[frame] = required.next_power_of_two();
         self.buffers[frame] = Some(rhi::backend::Buffer::new(
             device,
             &format!("{}_{frame}", self.label),
@@ -224,7 +206,6 @@ impl<T: bytemuck::Pod> FrameArena<T> {
         true
     }
 
-    /// Appends `elements`, returning the index of the first.
     fn push(&mut self, frame: usize, elements: &[T]) -> u32 {
         let base = self.cursors[frame];
         let end = base + elements.len();
@@ -252,22 +233,17 @@ impl<T: bytemuck::Pod> FrameArena<T> {
     }
 }
 
-/// Bind group layouts, per-frame camera UBOs, the atlas group, and the tint
-/// palette and instance buffers shared by pipelines that draw item meshes
-/// with the item shaders.
 pub(super) struct ItemPipelineShared {
     pub pipeline_layout: rhi::backend::PipelineLayout,
     camera_layout: rhi::backend::BindGroupLayout,
     atlas_layout: rhi::backend::BindGroupLayout,
     tint_layout: rhi::backend::BindGroupLayout,
     camera_sets: Vec<rhi::backend::BindGroup>,
-    /// The shared [`Lightmap`]'s group, set 3.
     lightmap_set: rhi::backend::BindGroup,
     atlas_set: rhi::backend::BindGroup,
     atlas_sampler: rhi::backend::Sampler,
     camera_buffers: Vec<rhi::backend::Buffer>,
     tints: FrameArena<u32>,
-    /// Each frame's tint palette group, re-pointed when `tints` grows.
     tint_sets: Vec<rhi::backend::BindGroup>,
     instances: FrameArena<ItemInstance>,
 }
@@ -294,16 +270,19 @@ impl ItemPipelineShared {
             size_of::<CameraUniform>() as u64,
             &format!("{label}_camera"),
         );
-        // Vanilla's items atlas has no mip chain, so generated items sample
-        // level 0. TODO: block-model items draw from the mipmapped blocks atlas
-        // in vanilla; pomme samples those at level 0 too.
         let atlas_sampler = rhi::backend::create_sampler(device, &rhi::SamplerDesc::NEAREST);
 
-        let tints = FrameArena::new(device, rhi::BufferUsages::STORAGE, format!("{label}_tints"));
+        let tints = FrameArena::new(
+            device,
+            rhi::BufferUsages::UNIFORM,
+            format!("{label}_tints"),
+            TINT_PALETTE_LEN,
+        );
         let instances = FrameArena::new(
             device,
             rhi::BufferUsages::VERTEX,
             format!("{label}_instances"),
+            1,
         );
         let mut this = Self {
             pipeline_layout,
@@ -332,9 +311,9 @@ impl ItemPipelineShared {
             self.tint_layout,
             &[(
                 0,
-                rhi::backend::BindingResource::storage(
+                rhi::backend::BindingResource::uniform(
                     self.tints.buffer(frame),
-                    self.tints.byte_capacity(frame),
+                    (TINT_PALETTE_LEN * size_of::<u32>()) as u64,
                 ),
             )],
         );
@@ -353,8 +332,6 @@ impl ItemPipelineShared {
         self.camera_buffers[frame].write(bytes);
     }
 
-    /// Binds `pipeline` with the frame's groups and instance buffer; call
-    /// after `begin_frame`.
     pub(super) fn bind(
         &self,
         pass: &mut rhi::backend::RenderPassEncoder,
@@ -374,8 +351,6 @@ impl ItemPipelineShared {
         pass.set_vertex_buffer(1, self.instances.buffer(frame).handle());
     }
 
-    /// Restarts the frame's tint and instance buffers, sized for `items`
-    /// copies with `colors` tints between them.
     pub(super) fn begin_frame(
         &mut self,
         device: &rhi::backend::Device,
@@ -389,7 +364,6 @@ impl ItemPipelineShared {
         self.instances.begin_frame(device, frame, items);
     }
 
-    /// Queues one copy of a mesh, returning its instance index.
     pub(super) fn push_item(
         &mut self,
         frame: usize,
@@ -427,15 +401,11 @@ impl ItemPipelineShared {
 }
 
 pub struct ItemEntityPipeline {
-    /// Vanilla `ITEM_CUTOUT`: alpha-tested, no blending.
     cutout: rhi::backend::RenderPipeline,
-    /// Vanilla `ITEM_TRANSLUCENT`: alpha-tested and blended.
     translucent: rhi::backend::RenderPipeline,
-    /// Vanilla `OUTLINE_CULL`, which both item sheets resubmit as.
     outline: rhi::backend::RenderPipeline,
     shared: ItemPipelineShared,
     meshes: HashMap<String, MeshEntry>,
-    /// The last `draw`'s glowing copies.
     outline_runs: Vec<Run>,
 }
 
@@ -492,7 +462,6 @@ impl ItemEntityPipeline {
         );
     }
 
-    /// `None` if no mesh is built yet, else its 3D-model flag and local bounds.
     pub fn mesh_info(&self, name: &str) -> Option<ItemMeshInfo> {
         self.meshes.get(name).map(|m| ItemMeshInfo {
             is_block_model: m.is_3d_model,
@@ -549,7 +518,6 @@ impl ItemEntityPipeline {
             }
             let region = uv_map.get_region(texture_key);
             translucent |= region.translucent;
-            // layerN is tintindex N; the shader leaves ones past the palette untinted.
             let tint_index = Some(layer as u32);
             let mut layer_vertices = uv_map
                 .sprite_alpha_mask(texture_key)
@@ -562,11 +530,6 @@ impl ItemEntityPipeline {
         }
     }
 
-    /// Cutout meshes first, then translucent ones, as vanilla's item sheets
-    /// are ordered. Each item's copies, being consecutive, draw as one
-    /// instanced call; nothing is reordered.
-    // TODO: vanilla also outlines glowing item entities (`submitItem` into the
-    // outline target); the colour can ride in `ItemInstance`.
     pub fn draw(
         &mut self,
         device: &rhi::backend::Device,
@@ -601,12 +564,10 @@ impl ItemEntityPipeline {
         self.outline_runs = runs(items, &self.meshes, |item, _| item.outline_color.is_some());
     }
 
-    /// Whether the last `draw` left any glowing copy to outline.
     pub fn has_outlines(&self) -> bool {
         !self.outline_runs.is_empty()
     }
 
-    /// The last `draw`'s glowing copies, into the outline target's pass.
     pub fn draw_outlines(&self, pass: &mut rhi::backend::RenderPassEncoder, frame: usize) {
         self.draw_runs(pass, frame, self.outline, &self.outline_runs);
     }
@@ -661,8 +622,6 @@ impl ItemEntityPipeline {
     }
 }
 
-/// Local-space bounds of a baked item mesh before its display transform.
-/// Empty meshes report a degenerate box at the origin.
 fn mesh_bounds(vertices: &[ItemVertex]) -> (glam::Vec3, glam::Vec3) {
     if vertices.is_empty() {
         return (glam::Vec3::ZERO, glam::Vec3::ZERO);
@@ -678,8 +637,6 @@ fn mesh_bounds(vertices: &[ItemVertex]) -> (glam::Vec3, glam::Vec3) {
     (min, max)
 }
 
-/// Vanilla stores a cardinal `BakedQuad.direction()` even when an element
-/// rotation makes the geometric normal oblique, `UP` for a degenerate quad.
 fn cardinal_normal(positions: &[[f32; 3]; 4]) -> glam::Vec3 {
     let direction = direction_from_positions(positions).unwrap_or(Direction::Up);
     glam::Vec3::from_array(direction.offset().map(|v| v as f32))
@@ -708,9 +665,6 @@ fn build_item_mesh(model: &BakedModel, uv_map: &AtlasUVMap) -> Vec<ItemVertex> {
                     region.u_min + quad.uvs[i][0] * u_span,
                     region.v_min + quad.uvs[i][1] * v_span,
                 ],
-                // Held/GUI item rendering still consumes the baked shade byte.
-                // The dropped-item world shader ignores it and instead uses
-                // the baked cardinal normal, matching vanilla's item shader.
                 light_tint: crate::renderer::chunk::mesher::pack_light_tint(
                     quad.shade_light,
                     crate::renderer::chunk::mesher::PACKED_WHITE_SHIFTED,
@@ -789,11 +743,6 @@ fn build_extruded_item_mask(
         [-0.5, 0.5, z_min],
         [0.5, 0.5, z_min],
     ];
-    // Vanilla's generated-item NORTH face uses UVs [16, 0, 0, 16].
-    // With the north-face winding below that preserves the sprite's model-space
-    // orientation: x=+0.5 samples the right side of the sprite, just like the
-    // SOUTH face. Mirroring these UVs makes an asymmetric back silhouette no
-    // longer line up with the generated side faces.
     let back_uvs = [
         [region.u_max, region.v_max],
         [region.u_min, region.v_max],
@@ -828,8 +777,6 @@ fn build_extruded_item_mask(
             let fy = 0.5 - (y + 1) as f32 * py;
             let fx1 = fx + px;
             let fy1 = fy + py;
-            // Vanilla ItemModelGenerator maps each side face from 0.1 to 0.9
-            // inside its source pixel, measured across the exact sprite bounds.
             let u0 = region.u_min + (x as f32 + 0.1) * px * u_span;
             let u1 = region.u_min + (x as f32 + 0.9) * px * u_span;
             let v0 = region.v_min + (y as f32 + 0.1) * py * v_span;
@@ -961,7 +908,6 @@ fn build_flat_quad(region: AtlasRegion, tint_index: Option<u32>) -> Vec<ItemVert
         .collect()
 }
 
-/// The held-item pipeline: lit by `Lighting.Entry.LEVEL`, like dropped items.
 pub(super) fn create_pipeline(
     device: &rhi::backend::Device,
     targets: rhi::backend::PipelineTargets,
@@ -970,7 +916,6 @@ pub(super) fn create_pipeline(
     create_pipeline_impl(device, targets, layout, rhi::FrontFace::Ccw, true, true)
 }
 
-/// The dropped-item pipelines: `(cutout, translucent)`.
 fn create_world_pipelines(
     device: &rhi::backend::Device,
     targets: rhi::backend::PipelineTargets,
@@ -981,8 +926,6 @@ fn create_world_pipelines(
     (world(false), world(true))
 }
 
-/// Vanilla `OUTLINE_CULL` for item quads: the silhouette in the outline
-/// colour, into the outline target with no depth or blend.
 fn create_outline_pipeline(
     device: &rhi::backend::Device,
     layout: rhi::backend::PipelineLayout,
@@ -1033,11 +976,6 @@ fn create_pipeline_impl(
         &rhi::RenderPipelineDesc {
             cull_mode: rhi::CullMode::Back,
             front_face,
-            // Vanilla 26.2's DepthStencilState.DEFAULT is inclusive
-            // GREATER_THAN_OR_EQUAL under reversed-Z. Pomme uses conventional
-            // depth here, so the equivalent comparison is LESS_OR_EQUAL. The
-            // equality case matters where generated front/back planes meet
-            // their per-pixel extrusion walls at the exact same depth.
             depth: Some(rhi::DepthState::WRITE),
             blend: blend.then_some(rhi::BlendState::OVER_REPLACE_ALPHA),
             ..rhi::RenderPipelineDesc::new(
@@ -1058,7 +996,6 @@ mod tests {
     fn item_instance_attributes_cover_the_struct() {
         let attributes = ItemInstance::BUFFER.attributes;
         let last = attributes.last().unwrap();
-        // item_instance.glsl's last location.
         assert_eq!(last.location, 15);
         assert_eq!(
             (last.offset + last.format.size()) as usize,
@@ -1167,7 +1104,6 @@ mod tests {
         let p3 = -tangent * 0.5 + up * 0.5;
         let mut positions = [p0.to_array(), p1.to_array(), p2.to_array(), p3.to_array()];
 
-        // Ensure the synthetic winding points along the intended oblique normal.
         if crate::world::block::model::quad_normal(&positions)
             .unwrap()
             .dot(normal)
@@ -1219,9 +1155,6 @@ mod tests {
         };
         let vertices = build_extruded_item_mask(&mask, AtlasRegion::UNIT, None);
 
-        // Each frame exposes the shared edge from one side, so vanilla emits
-        // eight side quads total. Collapsing the frames into one opacity bitmap
-        // would incorrectly remove both shared-edge quads and yield 48 vertices.
         assert_eq!(vertices.len(), 12 + 8 * 6);
     }
 
@@ -1282,28 +1215,24 @@ mod tests {
         let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
         let vertices = build_extruded_item(&image, AtlasRegion::UNIT);
         let expected = [
-            // UP
             [0.1, 0.1],
             [0.1, 0.9],
             [0.9, 0.9],
             [0.1, 0.1],
             [0.9, 0.9],
             [0.9, 0.1],
-            // DOWN
             [0.9, 0.9],
             [0.9, 0.1],
             [0.1, 0.1],
             [0.9, 0.9],
             [0.1, 0.1],
             [0.1, 0.9],
-            // LEFT / west-facing geometry
             [0.9, 0.9],
             [0.1, 0.9],
             [0.1, 0.1],
             [0.9, 0.9],
             [0.1, 0.1],
             [0.9, 0.1],
-            // RIGHT / east-facing geometry
             [0.1, 0.1],
             [0.9, 0.1],
             [0.9, 0.9],

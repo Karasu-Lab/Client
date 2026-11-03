@@ -3,13 +3,11 @@ use std::path::{Path, PathBuf};
 use crate::assets::{AssetIndex, resolve_asset_path};
 use crate::renderer::{rhi, shader, util};
 
-// Minecraft panorama face order differs from Vulkan cubemap layer order
 const FACE_TO_LAYER: [u32; 6] = [4, 1, 5, 0, 2, 3];
 
 const PARAMS_LAYOUT: &[rhi::BindGroupLayoutEntry] = &[rhi::BindGroupLayoutEntry::uniform(
     rhi::ShaderStages::FRAGMENT,
 )];
-/// The six-face cube map, then its sampler.
 const CUBE_LAYOUT: &[rhi::BindGroupLayoutEntry] = &[
     rhi::BindGroupLayoutEntry::texture(rhi::ShaderStages::FRAGMENT),
     rhi::BindGroupLayoutEntry::sampler(rhi::ShaderStages::FRAGMENT),
@@ -26,13 +24,10 @@ pub struct PanoramaPipeline {
     cube: rhi::backend::Texture,
     cube_sampler: rhi::backend::Sampler,
     has_cubemap: bool,
-    /// The files behind the current cubemap, so a reload to the same set is a
-    /// no-op.
     faces: Option<[PathBuf; 6]>,
 }
 
 impl PanoramaPipeline {
-    /// `faces` comes from [`resolve_panorama_faces`]; `None` draws nothing.
     pub fn new(
         device: &rhi::backend::Device,
         targets: rhi::backend::PipelineTargets,
@@ -149,8 +144,6 @@ fn resolve_panorama_face(
     pomme_vfs::exists(&path).then_some(path)
 }
 
-/// All six faces from one source: the flat `panorama_{i}.png` overrides in
-/// `panorama_dir` if it has every one, else the jar's. Never mixes the two.
 pub fn resolve_panorama_faces(
     panorama_dir: &Path,
     jar_assets_dir: &Path,
@@ -216,11 +209,13 @@ fn load_cubemap(
         staging_data[layer * face_bytes..(layer + 1) * face_bytes].copy_from_slice(&flipped);
     }
 
+    let mip_levels = mip_levels_for(face_w, face_h);
+    let (mip_data, copies) = cubemap_mips(&staging_data, face_w, face_h, mip_levels);
     let texture = create_cubemap(device, face_w, face_h);
     let staging_buffer = rhi::backend::Buffer::with_data(
         device,
         "panorama_cubemap_staging",
-        &staging_data,
+        &mip_data,
         rhi::BufferUsages::COPY_SRC,
     );
 
@@ -228,12 +223,11 @@ fn load_cubemap(
         device,
         staging_buffer.handle(),
         texture.handle(),
-        face_w,
-        face_h,
+        mip_levels,
+        &copies,
     );
     staging_buffer.destroy(device);
 
-    let mip_levels = mip_levels_for(face_w, face_h);
     let sampler =
         rhi::backend::create_sampler(device, &rhi::SamplerDesc::LINEAR.with_mips(mip_levels));
 
@@ -266,74 +260,94 @@ fn create_cubemap(device: &rhi::backend::Device, width: u32, height: u32) -> rhi
     )
 }
 
+fn downsample(pixels: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let (next_w, next_h) = ((width / 2).max(1), (height / 2).max(1));
+    let mut out = Vec::with_capacity((next_w * next_h * 4) as usize);
+    for y in 0..next_h {
+        for x in 0..next_w {
+            let xs = [(x * 2).min(width - 1), (x * 2 + 1).min(width - 1)];
+            let ys = [(y * 2).min(height - 1), (y * 2 + 1).min(height - 1)];
+            for channel in 0..4 {
+                let sum: u32 = ys
+                    .iter()
+                    .flat_map(|&row| xs.iter().map(move |&column| (row, column)))
+                    .map(|(row, column)| {
+                        u32::from(pixels[((row * width + column) * 4) as usize + channel])
+                    })
+                    .sum();
+                out.push(((sum + 2) / 4) as u8);
+            }
+        }
+    }
+    out
+}
+
+fn cubemap_mips(
+    base: &[u8],
+    width: u32,
+    height: u32,
+    mip_levels: u32,
+) -> (Vec<u8>, Vec<rhi::TexelCopy>) {
+    let face_bytes = (width * height * 4) as usize;
+    let mut faces: Vec<Vec<u8>> = (0..6)
+        .map(|layer| base[layer * face_bytes..(layer + 1) * face_bytes].to_vec())
+        .collect();
+    let (mut level_w, mut level_h) = (width, height);
+    let mut data = Vec::new();
+    let mut copies = Vec::new();
+    for level in 0..mip_levels {
+        for (layer, pixels) in faces.iter().enumerate() {
+            copies.push(rhi::TexelCopy {
+                buffer_offset: data.len() as u64,
+                mip_level: level,
+                layer: layer as u32,
+                origin: [0, 0],
+                width: level_w,
+                height: level_h,
+            });
+            data.extend_from_slice(pixels);
+        }
+        if level + 1 < mip_levels {
+            faces = faces
+                .iter()
+                .map(|pixels| downsample(pixels, level_w, level_h))
+                .collect();
+            level_w = (level_w / 2).max(1);
+            level_h = (level_h / 2).max(1);
+        }
+    }
+    (data, copies)
+}
+
 fn upload_cubemap(
     device: &rhi::backend::Device,
     staging_buffer: rhi::backend::BufferHandle,
     texture: rhi::backend::TextureHandle,
-    face_w: u32,
-    face_h: u32,
+    mip_levels: u32,
+    copies: &[rhi::TexelCopy],
 ) {
     use rhi::TextureUse;
 
-    let mip_levels = mip_levels_for(face_w, face_h);
-    let face_bytes = (face_w * face_h * 4) as u64;
-    let copies = util::layer_copies(face_w, face_h, 6, face_bytes);
-    let mips = |first_mip, mips| rhi::TextureRange {
-        first_mip,
-        mips,
+    let all = rhi::TextureRange {
+        first_mip: 0,
+        mips: mip_levels,
         first_layer: 0,
         layers: 6,
     };
-    let mip = |level, from, to| rhi::backend::TextureTransition {
-        texture,
-        range: mips(level, 1),
-        from,
-        to,
-    };
-
     device.submit(|encoder| {
         encoder.transition_textures(&[rhi::backend::TextureTransition {
             texture,
-            range: mips(0, mip_levels),
+            range: all,
             from: TextureUse::Undefined,
             to: TextureUse::CopyDst,
         }]);
-        encoder.copy_buffer_to_texture(staging_buffer, texture, &copies);
-
-        let mut mip_w = face_w;
-        let mut mip_h = face_h;
-        for level in 1..mip_levels {
-            encoder.transition_textures(&[mip(
-                level - 1,
-                TextureUse::CopyDst,
-                TextureUse::CopySrc,
-            )]);
-            let next_w = (mip_w / 2).max(1);
-            let next_h = (mip_h / 2).max(1);
-            encoder.blit(
-                texture,
-                texture,
-                &rhi::Blit {
-                    src_level: level - 1,
-                    src_size: [mip_w, mip_h],
-                    dst_level: level,
-                    dst_size: [next_w, next_h],
-                    layers: 6,
-                },
-            );
-            encoder.transition_textures(&[mip(
-                level - 1,
-                TextureUse::CopySrc,
-                TextureUse::ShaderRead,
-            )]);
-            mip_w = next_w;
-            mip_h = next_h;
-        }
-        encoder.transition_textures(&[mip(
-            mip_levels - 1,
-            TextureUse::CopyDst,
-            TextureUse::ShaderRead,
-        )]);
+        encoder.copy_buffer_to_texture(staging_buffer, texture, copies);
+        encoder.transition_textures(&[rhi::backend::TextureTransition {
+            texture,
+            range: all,
+            from: TextureUse::CopyDst,
+            to: TextureUse::ShaderRead,
+        }]);
     });
 }
 

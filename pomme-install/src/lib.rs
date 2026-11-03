@@ -1,11 +1,3 @@
-//! Installs a Minecraft version's assets the way the client reads them: the
-//! asset index and objects under `assets/`, and the client jar's `assets/`
-//! extracted under `versions/<version>/extracted/`.
-//!
-//! Every download is checked against the sha1 Mojang publishes, retried, and
-//! written beside its final path then renamed, so an interrupted install
-//! leaves nothing half-written under a real name.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,20 +21,13 @@ const RESOURCES_BASE_URL: &str = "https://resources.download.minecraft.net";
 const CONCURRENT_DOWNLOADS: usize = 32;
 const ATTEMPTS: u32 = 3;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
-/// GitHub's API refuses requests without one.
 #[cfg(not(target_arch = "wasm32"))]
 const USER_AGENT: &str = "pomme";
 
-/// Where an install fetches from. The defaults are Mojang's servers; a browser
-/// build, which those do not serve to other origins, points them at a mirror.
 #[derive(Clone, Debug)]
 pub struct Endpoints {
-    /// The version manifest (`version_manifest_v2.json`).
     pub version_manifest: String,
-    /// The asset objects, as `<base>/<first two hash digits>/<hash>`.
     pub resources_base: String,
-    /// Which asset objects to download, by their key in the asset index (such
-    /// as `minecraft/lang/en_us.json`). `None` downloads all of them.
     pub keep_object: Option<fn(&str) -> bool>,
 }
 
@@ -56,7 +41,6 @@ impl Default for Endpoints {
     }
 }
 
-/// How far an install has got: `done` of `total` steps, with what's happening.
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub done: u32,
@@ -122,25 +106,28 @@ fn extracted_dir(versions_dir: &Path, version: &str) -> PathBuf {
     versions_dir.join(version).join("extracted")
 }
 
-/// Written into a version's extraction once it's complete.
 const EXTRACTED_MARKER: &str = ".extracted";
 
 fn extracted_marker(versions_dir: &Path, version: &str) -> PathBuf {
     extracted_dir(versions_dir, version).join(EXTRACTED_MARKER)
 }
 
-/// The version's index and its jar's extraction are in place. Each is
-/// written only once it's complete, the extraction with its `.extracted`
-/// marker; older launchers extracted in place and wrote the marker last, so
-/// one without it may be half done.
+pub fn install_markers(
+    assets_dir: &Path,
+    versions_dir: &Path,
+    version: &str,
+) -> (PathBuf, PathBuf) {
+    (
+        index_path(assets_dir, version),
+        extracted_marker(versions_dir, version),
+    )
+}
+
 pub fn is_installed(assets_dir: &Path, versions_dir: &Path, version: &str) -> bool {
     pomme_vfs::exists(&index_path(assets_dir, version))
         && pomme_vfs::exists(&extracted_marker(versions_dir, version))
 }
 
-/// Downloads whatever of `version` is missing or damaged, reporting through
-/// `on_progress`. Runs on a multi-threaded tokio runtime: the jar extraction
-/// blocks in place.
 pub async fn install(
     http: &reqwest::Client,
     assets_dir: &Path,
@@ -159,7 +146,6 @@ pub async fn install(
     .await
 }
 
-/// [`install_from`] over an HTTP client of its own.
 pub async fn install_with(
     endpoints: &Endpoints,
     assets_dir: &Path,
@@ -178,7 +164,6 @@ pub async fn install_with(
     .await
 }
 
-/// [`install`] from `endpoints`.
 pub async fn install_from(
     http: &reqwest::Client,
     endpoints: &Endpoints,
@@ -225,7 +210,6 @@ pub async fn install_from(
         })
         .collect();
     download_all(http, objects, &report).await?;
-    // After the objects, so an index on disk means they're all there.
     write_atomic(&index_path(assets_dir, version), &index_bytes).await?;
 
     let out = extracted_dir(versions_dir, version);
@@ -246,7 +230,6 @@ pub async fn install_from(
         blocking(|| {
             let _ = pomme_vfs::remove_dir_all(&part);
             extract_assets(&jar, &part, &extract_report)?;
-            // Inside the `.part`, so it lands with the files in one rename.
             pomme_vfs::write(&part.join(EXTRACTED_MARKER), version.as_bytes())
                 .map_err(|e| format!("{}: {e}", part.display()))?;
             let _ = pomme_vfs::remove_dir_all(&out);
@@ -256,8 +239,6 @@ pub async fn install_from(
     Ok(())
 }
 
-/// Runs blocking `work`. On a multi-threaded tokio runtime that keeps the
-/// other tasks going; the browser has one thread and nothing to keep going.
 fn blocking<R>(work: impl FnOnce() -> R) -> R {
     #[cfg(not(target_arch = "wasm32"))]
     return tokio::task::block_in_place(work);
@@ -265,7 +246,6 @@ fn blocking<R>(work: impl FnOnce() -> R) -> R {
     work()
 }
 
-/// Waits `duration`: on tokio's timer natively, on the browser's `setTimeout`.
 async fn sleep(duration: Duration) {
     #[cfg(not(target_arch = "wasm32"))]
     tokio::time::sleep(duration).await;
@@ -273,8 +253,6 @@ async fn sleep(duration: Duration) {
     gloo_timers::future::sleep(duration).await;
 }
 
-/// How a download's hash is taken: Mojang publishes plain sha1s, while git
-/// hashes a blob behind a `blob <len>\0` header.
 #[derive(Clone, Copy)]
 pub(crate) enum Hash {
     Sha1,
@@ -292,7 +270,6 @@ impl Hash {
     }
 }
 
-/// `on_progress` taking the parts of a `Progress`.
 fn reporter(
     on_progress: &(dyn Fn(Progress) + Send + Sync),
 ) -> impl Fn(u32, u32, &str) + Send + Sync + '_ {
@@ -305,7 +282,6 @@ fn reporter(
     }
 }
 
-/// One file to download to `path`, checked against its `expected` hash.
 pub(crate) struct Fetch {
     pub url: String,
     pub path: PathBuf,
@@ -314,7 +290,6 @@ pub(crate) struct Fetch {
     pub hash: Hash,
 }
 
-/// Downloads every file of `files` not already on disk at its size.
 pub(crate) async fn download_all(
     http: &reqwest::Client,
     files: Vec<Fetch>,
@@ -331,8 +306,6 @@ pub(crate) async fn download_all(
     let mut done_bytes = 0;
     let mut last_report = Instant::now();
     let mut pending = missing.into_iter();
-    // Polled on this task rather than spawned: the browser's requests are not
-    // `Send`, and the downloads wait on the network, not on this task.
     let download = |file: Fetch| {
         let http = http.clone();
         async move {
@@ -378,8 +351,6 @@ pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(
 
 pub(crate) async fn get(http: &reqwest::Client, url: &str) -> Result<reqwest::Response, String> {
     let request = http.get(url);
-    // A custom header makes a browser preflight the request, which the asset
-    // servers do not answer.
     #[cfg(not(target_arch = "wasm32"))]
     let request = request.header(reqwest::header::USER_AGENT, USER_AGENT);
     request
@@ -394,7 +365,6 @@ async fn fetch(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes.map_err(|e| e.to_string())?.to_vec())
 }
 
-/// The body of `url`, which must hash to `expected` by `hash`.
 async fn fetch_verified(
     http: &reqwest::Client,
     url: &str,
@@ -430,7 +400,6 @@ where
     Err(format!("{url}: {last_error}"))
 }
 
-/// Writes `bytes` beside `path`, then renames it into place.
 pub async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         pomme_vfs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -442,8 +411,6 @@ pub async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     pomme_vfs::rename(&part, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Extracts the jar's `assets/` entries into `out`, refusing any entry whose
-/// path would land outside it.
 fn extract_assets(jar: &[u8], out: &Path, report: &dyn Fn(u32, u32)) -> Result<(), String> {
     let mut archive =
         zip::ZipArchive::new(std::io::Cursor::new(jar)).map_err(|e| format!("Client jar: {e}"))?;
@@ -492,7 +459,6 @@ mod tests {
         zip_of(&entries)
     }
 
-    /// A zip of `(name, body, unix mode)` entries.
     pub(crate) fn zip_of(entries: &[(&str, &str, u32)]) -> Vec<u8> {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         for &(name, body, mode) in entries {
@@ -547,7 +513,6 @@ mod tests {
             .await
             .unwrap();
         assert!(!is_installed(&assets, &versions, "26.2"));
-        // What an older launcher left when it was closed mid-extraction.
         std::fs::create_dir_all(versions.join("26.2/extracted/assets")).unwrap();
         assert!(!is_installed(&assets, &versions, "26.2"));
         std::fs::write(versions.join("26.2/extracted/.extracted"), "26.2").unwrap();

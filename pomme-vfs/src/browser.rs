@@ -1,17 +1,12 @@
-//! The browser's Cache storage as the memory tree's disk: files written into
-//! the tree are kept there by [`persist`], and [`restore`] reads them back on
-//! the next visit.
-
 use std::path::{Path, PathBuf};
 
-use js_sys::{Array, Reflect, Uint8Array};
+use js_sys::{Array, Promise, Reflect, Uint8Array};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Cache, CacheStorage, Request, Response};
 
 use crate::memory::global::with;
 
-/// Cache entries are keyed by URLs under this origin, which nothing serves.
 const KEY_PREFIX: &str = "https://pomme-vfs.invalid/";
 
 fn js_error(error: JsValue) -> String {
@@ -52,33 +47,62 @@ fn path_of(url: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-/// Stores the file at `path` of the memory tree in the cache `namespace`.
 pub async fn persist(namespace: &str, path: &Path) -> Result<(), String> {
-    let mut bytes = crate::read(path).map_err(|e| e.to_string())?;
-    let response = Response::new_with_opt_u8_array(Some(&mut bytes)).map_err(js_error)?;
     let cache = open(namespace).await?;
-    JsFuture::from(cache.put_with_str(&key(path), &response))
-        .await
-        .map_err(js_error)?;
+    JsFuture::from(put(&cache, path)?).await.map_err(js_error)?;
     Ok(())
 }
 
-/// Stores every file of the memory tree under `dir`.
+fn put(cache: &Cache, path: &Path) -> Result<Promise, String> {
+    let bytes = crate::read(path).map_err(|e| e.to_string())?;
+    let body = Uint8Array::new_with_length(bytes.len() as u32);
+    body.copy_from(&bytes);
+    let response = Response::new_with_opt_buffer_source(Some(&body)).map_err(js_error)?;
+    Ok(cache.put_with_str(&key(path), &response))
+}
+
+const PERSIST_BATCH: usize = 64;
+
 pub async fn persist_dir(namespace: &str, dir: &Path) -> Result<(), String> {
+    persist_dir_with(namespace, dir, &[], &|_, _| {}).await
+}
+
+pub async fn persist_dir_with(
+    namespace: &str,
+    dir: &Path,
+    last: &[PathBuf],
+    on_progress: &dyn Fn(u32, u32),
+) -> Result<(), String> {
     let paths: Vec<PathBuf> = with(|fs| {
         fs.files()
             .map(|(path, _)| path.to_path_buf())
-            .filter(|path| path.starts_with(dir))
+            .filter(|path| path.starts_with(dir) && !last.contains(path))
             .collect()
     });
-    for path in paths {
-        persist(namespace, &path).await?;
+    let last: Vec<&PathBuf> = last.iter().filter(|path| path.starts_with(dir)).collect();
+    let total = (paths.len() + last.len()) as u32;
+    let cache = open(namespace).await?;
+    let mut done = 0;
+    on_progress(done, total);
+    for batch in paths.chunks(PERSIST_BATCH) {
+        let puts = Array::new();
+        for path in batch {
+            puts.push(&put(&cache, path)?.into());
+        }
+        JsFuture::from(Promise::all(&puts))
+            .await
+            .map_err(js_error)?;
+        done += batch.len() as u32;
+        on_progress(done, total);
+    }
+    for path in last {
+        JsFuture::from(put(&cache, path)?).await.map_err(js_error)?;
+        done += 1;
+        on_progress(done, total);
     }
     Ok(())
 }
 
-/// Reads every file of the cache `namespace` into the memory tree, returning
-/// how many there were.
 pub async fn restore(namespace: &str) -> Result<usize, String> {
     let cache = open(namespace).await?;
     let requests: Array = JsFuture::from(cache.keys())

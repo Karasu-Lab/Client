@@ -6,35 +6,22 @@ use crate::renderer::{packing, rhi, util};
 use crate::world::block::model::TextureId;
 use crate::world::block::render_assets::BlockRenderAssets;
 
+pub const MAX_SPRITE_RECTS: usize = 4096;
+
 #[derive(Debug, Clone, Copy)]
 pub struct AtlasRegion {
-    /// Exact normalized bounds of the sprite's level-0 content rectangle.
-    /// Vanilla addresses the full sprite; shrinking these bounds distorts a
-    /// block's first/last texel columns and makes adjacent faces disagree.
     pub u_min: f32,
     pub v_min: f32,
     pub u_max: f32,
     pub v_max: f32,
-    /// Exact level-0 content rectangle `(x, y, width, height)` in atlas texels.
-    /// The atlas is capped at 8192², so u16 is sufficient and avoids the
-    /// boundary rounding that motivated the old terrain inset.
     pub pixel_rect: [u16; 4],
-    /// Index into the atlas's sprite-rectangle buffer, which terrain vertices
-    /// carry instead of the rectangle itself. Index 0 is the missing tile.
     pub sprite: u16,
-    /// Every level-0 texel is fully opaque (alpha 255), so quads using this
-    /// sprite can render in the no-discard solid pass (early-Z). Sprites with
-    /// any transparent texel are cutout and stay in the discard pass.
     pub opaque: bool,
-    /// Some texel has an alpha strictly between 0 and 255. Vanilla
-    /// `NativeImage.computeTransparency` routes such sprites to the
-    /// translucent item sheet rather than the cutout one.
     pub translucent: bool,
 }
 
 #[cfg(test)]
 impl AtlasRegion {
-    /// A one-texel, fully opaque sprite spanning the whole atlas.
     pub(crate) const UNIT: Self = Self {
         u_min: 0.0,
         v_min: 0.0,
@@ -50,11 +37,8 @@ impl AtlasRegion {
 #[derive(Clone)]
 pub struct AtlasUVMap {
     regions: HashMap<String, AtlasRegion>,
-    /// `regions` by `TextureId`, for the ids interned before the atlas was
-    /// built; later ones fall back to the name lookup.
     by_texture: Vec<AtlasRegion>,
     sprite_alpha_masks: HashMap<String, SpriteAlphaMask>,
-    /// Level-0 rectangles by sprite index, as `(x, y, width, height)`.
     rects: Vec<[u32; 4]>,
     missing: AtlasRegion,
 }
@@ -102,7 +86,6 @@ impl AtlasUVMap {
         self.sprite_alpha_masks.get(name)
     }
 
-    /// Each sprite's texture name, by sprite index.
     #[cfg(feature = "cpu-bench")]
     pub fn sprite_names(&self) -> HashMap<u16, &str> {
         self.regions
@@ -112,8 +95,6 @@ impl AtlasUVMap {
     }
 }
 
-/// Vanilla 26.2 `atlases/blocks.json`, the only atlas built with mipmaps.
-/// Block keys are bare names here; the three entity sprites are listed as is.
 fn uses_block_atlas_mip_chain(key: &str) -> bool {
     let path = AssetId::parse(key).path;
     !path.contains('/')
@@ -137,25 +118,17 @@ pub fn atlas_asset_path(key: &str) -> String {
 pub struct TextureAtlas {
     pub texture: rhi::backend::Texture,
     pub sampler: rhi::backend::Sampler,
-    /// Storage buffer of `uvec4` level-0 sprite rectangles, indexed by
-    /// `AtlasRegion::sprite`; the terrain shaders resolve sprite UVs inside it.
     pub sprite_rects: rhi::backend::Buffer,
     pub uv_map: AtlasUVMap,
-    /// Width and height, in texels.
     pub size: u32,
     mip_levels: u32,
     animated: Vec<AnimatedSprite>,
-    /// A tick ran since the last upload; vanilla only draws after a tick.
     animation_ticked: bool,
-    /// Per frame in flight, room for every animated sprite's levels at once;
-    /// empty when nothing animates.
     animation_staging: Vec<rhi::backend::Buffer>,
 }
 
 const MISSING_TILE: u32 = 16;
 
-/// Maximum block-atlas mip level. Vanilla requests four levels and then lowers
-/// this globally when any stitched block-atlas sprite cannot support them.
 const MAX_MIP_LEVEL: u32 = 4;
 
 struct Source {
@@ -163,7 +136,6 @@ struct Source {
     data: Vec<u8>,
     w: u32,
     h: u32,
-    /// Over every frame, as vanilla's `SpriteContents.transparency` is.
     opaque: bool,
     translucent: bool,
     alpha_mask: Option<SpriteAlphaMask>,
@@ -172,7 +144,6 @@ struct Source {
 }
 
 impl Source {
-    /// A texture that failed to load; packs as the missing tile.
     fn empty(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -192,19 +163,13 @@ impl Source {
     }
 }
 
-/// Vanilla `SpriteContents.AnimatedTexture`: the frames a sprite plays and
-/// each unique frame's pixels.
 struct SpriteAnimation {
-    /// `(slot in pixels, ticks shown)` in play order.
     frames: Vec<(usize, u32)>,
     interpolate: bool,
-    /// Each unique frame's levels, level 0 first. Level 0 only until
-    /// `build_mip_chain` cuts a mipped sprite's levels from its strip mips.
     pixels: Vec<Vec<Vec<u8>>>,
 }
 
 impl SpriteAnimation {
-    /// `None` unless `layout` plays more than one frame.
     fn new(strip: &[u8], strip_width: u32, layout: &AnimationLayout) -> Option<Self> {
         if layout.frames.len() <= 1 {
             return None;
@@ -232,10 +197,7 @@ impl SpriteAnimation {
     }
 }
 
-/// Vanilla `SpriteContents.AnimationState`: a placed animated sprite and where
-/// it is in its frames.
 struct AnimatedSprite {
-    /// The level-0 cell, padding included.
     x: u32,
     y: u32,
     width: u32,
@@ -243,13 +205,10 @@ struct AnimatedSprite {
     animation: SpriteAnimation,
     frame: usize,
     sub_frame: u32,
-    /// The shown frame changed since the last upload. Vanilla's flag only
-    /// covers the last tick; several ticks can pass between two frames here.
     dirty: bool,
 }
 
 impl AnimatedSprite {
-    /// Vanilla `AnimationState.tick`.
     fn tick(&mut self) {
         self.sub_frame += 1;
         let (slot, time) = self.animation.frames[self.frame];
@@ -260,7 +219,6 @@ impl AnimatedSprite {
         }
     }
 
-    /// Vanilla `AnimationState.needsToDraw`.
     fn needs_upload(&self) -> bool {
         self.animation.interpolate || self.dirty
     }
@@ -269,8 +227,6 @@ impl AnimatedSprite {
         self.animation.pixels[0].len() as u32
     }
 
-    /// Level `level` as vanilla's `drawToAtlas` writes it: the shown frame, or
-    /// mixed toward the next one by the frame's progress.
     fn level_pixels<'a>(&'a self, level: usize, scratch: &'a mut Vec<u8>) -> &'a [u8] {
         let frames = &self.animation.frames;
         let (slot, time) = frames[self.frame];
@@ -279,15 +235,12 @@ impl AnimatedSprite {
             return current;
         }
         let next = &self.animation.pixels[frames[(self.frame + 1) % frames.len()].0][level];
-        // Vanilla packs the progress into the vertex index as an int of
-        // thousandths.
         let progress = ((self.sub_frame as f32 / time as f32) * 1000.0) as i32 as f32 / 1000.0;
         mix_rgba8(current, next, progress, scratch);
         scratch
     }
 }
 
-/// `animate_sprite_interpolate.fsh`: `mix` on the atlas's RGBA8 values.
 fn mix_rgba8(current: &[u8], next: &[u8], progress: f32, out: &mut Vec<u8>) {
     out.clear();
     out.extend(current.iter().zip(next).map(|(&a, &b)| {
@@ -365,7 +318,6 @@ impl AnimationFrameSpec {
     }
 }
 
-/// Vanilla `SpriteContents.FrameInfo`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AnimationFrame {
     index: u32,
@@ -379,7 +331,6 @@ struct AnimationLayout {
     frames_per_row: u32,
     unique_frames: Vec<u32>,
     initial_display_frame: u32,
-    /// The frames played, empty for a still sprite.
     frames: Vec<AnimationFrame>,
     interpolate: bool,
 }
@@ -462,9 +413,6 @@ fn animation_layout_from_metadata(
             .collect(),
     };
 
-    // SpriteContents drops the AnimatedTexture wrapper when zero or one valid
-    // frame remains. In that case frame lookups ignore the metadata index and
-    // sample the top-left logical frame from the original image.
     if frames.len() <= 1 {
         return Some(AnimationLayout {
             frame_width,
@@ -654,8 +602,6 @@ fn load_source(
     }
 }
 
-/// Every texture the block atlas packs for `render_assets`, and the
-/// flat-generated item textures among them.
 pub(crate) fn atlas_texture_names(
     render_assets: &BlockRenderAssets,
 ) -> (HashSet<&str>, HashSet<&str>) {
@@ -668,7 +614,6 @@ pub(crate) fn atlas_texture_names(
     (texture_names, generated_item_textures)
 }
 
-/// [`TextureAtlas::build_cpu`]'s output: everything the GPU upload consumes.
 pub(crate) struct AtlasCpu {
     pub uv_map: AtlasUVMap,
     atlas_pixels: Vec<u8>,
@@ -676,7 +621,6 @@ pub(crate) struct AtlasCpu {
     mip_level: u32,
     sources: Vec<Source>,
     placements: HashMap<String, Option<(u32, u32)>>,
-    /// The missing tile's level-0 origin.
     missing: (u32, u32),
 }
 
@@ -705,11 +649,19 @@ impl TextureAtlas {
             packs,
         );
 
+        if uv_map.rects.len() > MAX_SPRITE_RECTS {
+            return Err(format!(
+                "the atlas has {} sprites, more than the {MAX_SPRITE_RECTS} its rectangle table holds",
+                uv_map.rects.len()
+            ));
+        }
+        let mut padded_rects = uv_map.rects.clone();
+        padded_rects.resize(MAX_SPRITE_RECTS, [0; 4]);
         let sprite_rects = rhi::backend::Buffer::try_with_data(
             device,
             "atlas_sprite_rects",
-            bytemuck::cast_slice(&uv_map.rects),
-            rhi::BufferUsages::STORAGE,
+            bytemuck::cast_slice(&padded_rects),
+            rhi::BufferUsages::UNIFORM | rhi::BufferUsages::STORAGE,
         )?;
 
         let staging_pixels = build_mip_chain(
@@ -759,7 +711,6 @@ impl TextureAtlas {
                 let (x, y) = (*placements.get(source.name.as_str())?)?;
                 let pad = source.padding(mip_level);
                 let mut animation = source.animation?;
-                // Vanilla redraws the padded cell (`animate_sprite.vsh`).
                 for levels in &mut animation.pixels {
                     for (level, pixels) in levels.iter_mut().enumerate() {
                         *pixels =
@@ -813,8 +764,6 @@ impl TextureAtlas {
         })
     }
 
-    /// Vanilla `TextureAtlas.cycleAnimationFrames`' tick half; the upload
-    /// waits for [`Self::record_animation_upload`].
     pub fn tick_animations(&mut self) {
         for sprite in &mut self.animated {
             sprite.tick();
@@ -822,7 +771,6 @@ impl TextureAtlas {
         self.animation_ticked = true;
     }
 
-    /// Holds every animated sprite on its first frame.
     pub fn hold_animations(&mut self) {
         for sprite in &mut self.animated {
             sprite.dirty |= sprite.frame != 0;
@@ -832,8 +780,6 @@ impl TextureAtlas {
         self.animation_ticked = true;
     }
 
-    /// Vanilla `uploadAnimationFrames`: writes every sprite that needs it
-    /// into its rectangle at each of its levels.
     pub fn record_animation_upload(
         &mut self,
         encoder: &rhi::backend::CommandEncoder,
@@ -891,8 +837,6 @@ impl TextureAtlas {
         )]);
     }
 
-    /// The CPU half of [`Self::build`]: loads and packs every sprite into the
-    /// level-0 atlas pixels and UV map, with no GPU work.
     pub(crate) fn build_cpu(
         jar_assets_dir: &Path,
         asset_index: &Option<AssetIndex>,
@@ -914,16 +858,12 @@ impl TextureAtlas {
         let mip_level = effective_mip_level(&sources);
         let mip_align = 1 << mip_level;
         let block_pad = sprite_padding(mip_level, true);
-        // Vanilla `Stitcher.HOLDER_COMPARATOR`'s last key; the packer sorts by
-        // size stably.
         sources.sort_by(|a, b| a.name.cmp(&b.name));
         let packed_sources: Vec<(&Source, u32)> = sources
             .iter()
             .filter(|s| !s.data.is_empty())
             .map(|s| (s, s.padding(mip_level)))
             .collect();
-        // Vanilla `Stitcher.smallestFittingMinTexel`. One atlas holds every
-        // sheet here, so all cells keep the block sheet's mip alignment.
         let cell = |w: u32, h: u32, pad: u32| {
             (
                 (w + 2 * pad).next_multiple_of(mip_align),
@@ -942,8 +882,6 @@ impl TextureAtlas {
             );
         }
         let inset = |cell: Option<(u32, u32)>, pad| cell.map(|(x, y)| (x + pad, y + pad));
-        // Only an atlas already past its cap loses the missing tile; it then
-        // overlaps whatever owns the first cell rather than vanishing.
         let missing = inset(packed[0], block_pad).unwrap_or((block_pad, block_pad));
         let missing_region =
             pixel_region(missing.0, missing.1, MISSING_TILE, MISSING_TILE, atlas_size);
@@ -971,8 +909,6 @@ impl TextureAtlas {
             match placements.get(src.name.as_str()) {
                 Some(Some((cx, cy))) => {
                     let mut region = pixel_region(*cx, *cy, src.w, src.h, atlas_size);
-                    // TODO: an atlas past 8192 sprites needs a wider vertex
-                    // sprite field (`SPRITE_BITS`).
                     region.sprite = u16::try_from(rects.len())
                         .ok()
                         .filter(|&id| id < 1 << crate::renderer::chunk::mesher::SPRITE_BITS)
@@ -1013,9 +949,8 @@ impl TextureAtlas {
         }
     }
 
-    /// Byte size of `sprite_rects`, for its descriptor range.
     pub fn sprite_rects_bytes(&self) -> u64 {
-        (self.uv_map.rects.len() * size_of::<[u32; 4]>()) as u64
+        (MAX_SPRITE_RECTS * size_of::<[u32; 4]>()) as u64
     }
 
     pub fn destroy(&mut self, device: &rhi::backend::Device) {
@@ -1166,9 +1101,6 @@ fn extract_rect_rgba(
     output
 }
 
-/// Writes a `width` x `height` image at `(x, y)` with a `pad` texel border
-/// that repeats its edge texels, as vanilla's clamp-to-edge sprite blit fills
-/// the padding (`animate_sprite.vsh`).
 fn copy_rect_rgba(
     source: &[u8],
     width: u32,
@@ -1196,7 +1128,6 @@ fn copy_rect_rgba(
     }
 }
 
-/// `source` with a `pad` texel edge-repeating border, as its own image.
 fn padded_rgba(source: &[u8], width: u32, height: u32, pad: u32) -> Vec<u8> {
     let padded_width = width + 2 * pad;
     let mut out = vec![0; (padded_width * (height + 2 * pad) * 4) as usize];
@@ -1212,14 +1143,10 @@ fn padded_rgba(source: &[u8], width: u32, height: u32, pad: u32) -> Vec<u8> {
     out
 }
 
-/// Vanilla `Stitcher`'s padding with anisotropic filtering off, which Pomme
-/// doesn't offer yet. Only the block sheet is mipped; the others stitch at
-/// mip level 0.
 fn sprite_padding(mip_level: u32, mipped: bool) -> u32 {
     if mipped { 1 << mip_level } else { 1 }
 }
 
-/// Vanilla `MissingTextureAtlasSprite.generateMissingImage`.
 fn missing_tile_rgba() -> Vec<u8> {
     (0..MISSING_TILE * MISSING_TILE)
         .flat_map(|i| {
@@ -1530,26 +1457,17 @@ fn pixel_region(x: u32, y: u32, w: u32, h: u32, atlas_size: u32) -> AtlasRegion 
     let u_max = (x + w) as f32 / s;
     let v_max = (y + h) as f32 / s;
     AtlasRegion {
-        // Vanilla maps the complete sprite rectangle. Terrain no longer needs
-        // a synthetic inset because it carries the integer rectangle through
-        // to the shader instead of quantising atlas-boundary UVs to u16.
         u_min,
         v_min,
         u_max,
         v_max,
         pixel_rect: [x as u16, y as u16, w as u16, h as u16],
-        // Filled in by the caller from the sprite's texels; the missing tile is a
-        // solid checker at index 0, so these are its values.
         sprite: 0,
         opaque: true,
         translucent: false,
     }
 }
 
-/// `(opaque, translucent)` over every texel of an RGBA image: opaque when all
-/// alphas are 255, translucent when any alpha lies strictly between 0 and 255.
-/// Conservative for the solid pass: any transparency routes the sprite to the
-/// cutout pass, so a hole never renders solid.
 fn sprite_transparency(data: &[u8]) -> (bool, bool) {
     data.as_chunks::<4>()
         .0
@@ -1581,7 +1499,6 @@ mod tests {
             ("test/region_after_build".to_owned(), late_named),
         ]);
         let uv_map = AtlasUVMap::new(regions, HashMap::new(), Vec::new(), missing);
-        // Interned after the map was built: found through the name instead.
         let late = TextureId::intern("test/region_after_build");
         assert_eq!(uv_map.region(built).pixel_rect, named.pixel_rect);
         assert_eq!(uv_map.region(late).pixel_rect, late_named.pixel_rect);
@@ -1626,8 +1543,6 @@ mod tests {
         }
     }
 
-    /// Each sprite fills its padded cell at every level, so a sample just
-    /// past its edge never reaches a neighbour.
     #[test]
     fn mips_and_padding_stay_within_sprite_cells() {
         const SIZE: u32 = 256;
@@ -1831,8 +1746,6 @@ mod tests {
         );
     }
 
-    /// A `width`-wide strip of one-pixel-tall frames, frame `n` filled with
-    /// `[n, n, n, 255]`.
     fn numbered_strip(width: u32, frames: u32) -> Vec<u8> {
         (0..frames)
             .flat_map(|frame| {
@@ -1931,7 +1844,6 @@ mod tests {
 
     #[test]
     fn animation_tick_matches_vanilla_animation_state() {
-        // Frames 0 (2 ticks), 1, 1, 0: a repeated frame index isn't a change.
         let mut sprite = animated_sprite(vec![(0, 2), (1, 1), (1, 1), (0, 1)], false);
         sprite.tick();
         assert_eq!(
@@ -1957,12 +1869,10 @@ mod tests {
         assert!(sprite.needs_upload());
         let mut scratch = Vec::new();
         assert_eq!(sprite.level_pixels(0, &mut scratch), [0, 0, 0, 255]);
-        // 1/3 packs as 333 thousandths: 0.333 * 255 = 84.9.
         sprite.tick();
         assert_eq!(sprite.level_pixels(0, &mut scratch), [85, 85, 85, 255]);
         sprite.tick();
         assert_eq!(sprite.level_pixels(0, &mut scratch), [170, 170, 170, 255]);
-        // The last frame mixes back toward the first.
         sprite.tick();
         sprite.tick();
         assert_eq!(sprite.level_pixels(0, &mut scratch), [170, 170, 170, 255]);
@@ -1978,7 +1888,6 @@ mod tests {
             interpolate: None,
         };
         let layout = animation_layout_from_metadata(Some(&metadata), 4, 8).unwrap();
-        // Frame 0 red, frame 1 blue.
         let strip: Vec<u8> = [[255, 0, 0, 255], [0, 0, 255, 255]]
             .into_iter()
             .flat_map(|color| std::iter::repeat_n(color, 16).flatten())
@@ -2021,8 +1930,6 @@ mod tests {
         let layout = animation_layout_from_metadata(Some(&metadata), 4, 2).unwrap();
         assert_eq!(layout.initial_display_frame, 2);
 
-        // Horizontal 2x1 frames laid out as [0, 1] / [2, 3]. Frame 2 starts
-        // at the first two pixels of the second row.
         let mut rgba = vec![0_u8; 4 * 2 * 4];
         let frame_two_offset = 4 * 4;
         rgba[frame_two_offset..frame_two_offset + 4].copy_from_slice(&[9, 8, 7, 255]);
@@ -2052,9 +1959,6 @@ mod tests {
         assert_eq!(layout.unique_frames, vec![2, 0]);
         assert_eq!(layout.initial_display_frame, 2);
 
-        // Three vertically stacked 2x2 frames. Frame 2 contributes the
-        // top-left pixel, frame 0 contributes the bottom-right pixel; repeated
-        // frame 2 must not matter. The union mirrors vanilla getUniqueFrames().
         let mut data = vec![0u8; 2 * 6 * 4];
         data[(4 * 2 * 4) + 3] = 255;
         data[alpha_index(1, 1, 2)] = 255;
@@ -2073,9 +1977,6 @@ mod tests {
             frames: vec![vec![true, false], vec![false, true]],
         };
 
-        // Each source pixel is exposed toward the other in one animation
-        // frame. OR-ing the frames into one opacity bitmap would incorrectly
-        // erase both of these vanilla side faces.
         assert!(mask.has_exposed_edge(0, 0, 1, 0));
         assert!(mask.has_exposed_edge(1, 0, 0, 0));
     }
@@ -2091,8 +1992,6 @@ mod tests {
         };
         let layout = animation_layout_from_metadata(Some(&metadata), 2, 6).unwrap();
 
-        // Vanilla SpriteContents discards AnimatedTexture when <=1 valid frame
-        // remains, so isTransparent() samples the original top-left frame.
         assert_eq!(layout.frame_width, 2);
         assert_eq!(layout.frame_height, 2);
         assert_eq!(layout.unique_frames, vec![0]);
@@ -2110,8 +2009,6 @@ mod tests {
         };
         let layout = animation_layout_from_metadata(Some(&metadata), 2, 6).unwrap();
 
-        // Optional.empty means implicit sequential frames; Optional.of([])
-        // reaches SpriteContents with zero frames and therefore becomes static.
         assert_eq!(layout.unique_frames, vec![0]);
     }
 
@@ -2140,8 +2037,6 @@ mod tests {
         )
         .unwrap();
 
-        // The higher-priority pack replaces only the PNG. Vanilla must not
-        // inherit animation metadata from the lower resource that it replaced.
         let pack_path = pack_dir.join("cocoa_beans.png");
         let mut replacement = image::RgbaImage::new(2, 4);
         replacement.put_pixel(1, 3, image::Rgba([255, 255, 255, 255]));
@@ -2173,8 +2068,6 @@ mod tests {
         assert!(!uses_block_atlas_mip_chain("particle/glitter_0"));
         assert!(uses_block_atlas_mip_chain("sculk_vein"));
         assert!(uses_block_atlas_mip_chain("other:block/custom"));
-        // `atlases/blocks.json` lists three entity sprites; the chest sheet
-        // is its own unmipmapped atlas.
         assert!(uses_block_atlas_mip_chain("entity/bell/bell_body"));
         assert!(uses_block_atlas_mip_chain("entity/conduit/base"));
         assert!(!uses_block_atlas_mip_chain("entity/chest/normal"));

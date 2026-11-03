@@ -1,9 +1,3 @@
-//! The viewer: the world renderer driven with no game around it. It draws one
-//! level from a [`WorldSource`] through a fixed camera, with the UI off unless
-//! asked for. The chunk path is the game's — columns are loaded, lit, meshed
-//! and uploaded the way `GameState` does it — minus everything that needs a
-//! connection, an account or a player.
-
 pub mod assets;
 mod overlay;
 #[cfg(feature = "steel-world")]
@@ -33,6 +27,7 @@ use crate::renderer::chunk::occlusion_graph::{self, VisibilitySet};
 use crate::renderer::pipelines::entity_shadow::ShadowScene;
 use crate::renderer::pipelines::held_item::HandRenderSelection;
 use crate::renderer::pipelines::lightmap::LightmapInfo;
+pub use crate::renderer::rhi::backend::Context as GpuContext;
 use crate::renderer::{CloudMode, Renderer, RendererError, SkyState};
 use crate::resource_pack::ResourcePackManager;
 use crate::ui::font::{FontOptions, FontSources};
@@ -43,19 +38,12 @@ use crate::world::environment::{BiomeWeights, Environment, EnvironmentProbe};
 use crate::world::generated;
 use crate::world::light::{LevelLightEngine, LightDirty, LightTask, section_entries};
 
-pub use crate::renderer::rhi::backend::Context as GpuContext;
-
-/// One game tick, in seconds.
 const TICK_SECONDS: f32 = 1.0 / 20.0;
 
-/// The day time the sky shows, noon: a fixed view keeps its sky fixed.
 const DAY_TIME: u64 = 6000;
 
-/// The sections a column can have meshes for.
 const MAX_SECTIONS: i32 = 32;
 
-/// Vanilla's `VIS_MARGIN`-free default: the camera 8-block bucket the
-/// occlusion walk reruns on.
 const VISIBILITY_BUCKET: f64 = 8.0;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,43 +54,28 @@ pub enum ViewerError {
     Thread(#[from] thread::ThreadError),
 }
 
-/// The dimension a [`WorldSource`] draws.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dimension {
     pub min_y: i32,
     pub height: u32,
     pub has_skylight: bool,
-    /// The dimension's directional light, vanilla `Lighting.updateLevel`.
     pub cardinal_light: CardinalLightType,
     pub ambient_light: f32,
-    /// A flat world's horizon is at its bottom.
     pub flat: bool,
 }
 
-/// Where the viewer's world comes from. Generating a column blocks, so
-/// `chunk_packet` runs on a worker.
 pub trait WorldSource: Send + Sync + 'static {
     fn dimension(&self) -> Dimension;
 
-    /// How many biomes the biome registry has, which sections name them by.
     fn biome_count(&self) -> usize;
 
-    /// The temperature and downfall behind each biome id.
     fn biome_climate(&self) -> HashMap<u32, BiomeClimate>;
 
-    /// The dimension's attribute layers.
     fn environment(&self) -> Environment;
 
-    /// The body of column `(x, z)`'s `level_chunk_with_light` packet, which
-    /// `world::generated::decode` reads.
-    ///
-    /// # Errors
-    /// Fails if the column can't be generated.
     fn chunk_packet(&self, x: i32, z: i32) -> Result<Vec<u8>, String>;
 }
 
-/// Where the viewer's assets and caches live. On the web these are paths in
-/// the virtual file system.
 #[derive(Clone, Debug)]
 pub struct ViewerDirs {
     pub jar_assets_dir: PathBuf,
@@ -112,8 +85,10 @@ pub struct ViewerDirs {
     pub bedrock_ui_dir: PathBuf,
 }
 
-/// The camera's pose: feet-relative block position and the look angles in
-/// degrees, as the settings crate holds them.
+pub fn preload_render_assets(dirs: &ViewerDirs, asset_index: &Option<AssetIndex>) {
+    crate::renderer::preload_render_assets(&dirs.jar_assets_dir, asset_index, &dirs.cache_dir);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewerCamera {
     pub position: [f64; 3],
@@ -128,16 +103,11 @@ pub struct ViewerConfig {
     pub dirs: ViewerDirs,
     pub asset_index: Option<AssetIndex>,
     pub vsync: bool,
-    /// Whether the UI is drawn; the viewer starts with it off.
     pub ui_enabled: bool,
-    /// The wire protocol whose block states the world is in.
     pub protocol: i32,
-    /// Where the resource packs are kept, ready (see
-    /// [`assets::prepare`]).
     pub resource_pack_location: resourcepack::PackLocation,
 }
 
-/// What the F3 screen lists beyond the renderer.
 #[derive(Default)]
 struct Stats {
     position: [f64; 3],
@@ -182,7 +152,6 @@ impl RendererInfoSource for RendererProvider {
     }
 }
 
-/// A generated column on its way from a worker.
 type Generated = (ChunkPos, Result<Vec<u8>, String>);
 
 pub struct Viewer {
@@ -200,7 +169,6 @@ pub struct Viewer {
     block_registry: BlockRegistry,
     mesh_dispatcher: MeshDispatcher,
     mesh_columns: MeshColumns,
-    /// The sections each column has a mesh for.
     compiled: HashMap<ChunkPos, u32>,
     section_vis: HashMap<(ChunkPos, i32), VisibilitySet>,
     section_vis_epoch: HashMap<(ChunkPos, i32), u64>,
@@ -228,10 +196,6 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    /// A viewer drawing `source` into `window` through `ctx`.
-    ///
-    /// # Errors
-    /// Fails if the renderer can't be brought up.
     pub fn new(
         ctx: GpuContext,
         window: Arc<Window>,
@@ -283,7 +247,8 @@ impl Viewer {
         let light_engine =
             LevelLightEngine::new(dimension.height, dimension.min_y, dimension.has_skylight);
 
-        let camera_position = Position::new(camera.position[0], camera.position[1], camera.position[2]);
+        let camera_position =
+            Position::new(camera.position[0], camera.position[1], camera.position[2]);
         let camera_look = LookDirection::new(camera.yaw_deg, camera.pitch_deg);
         renderer.reset_camera(camera_position, camera_look);
 
@@ -345,16 +310,13 @@ impl Viewer {
             stats,
             renderer_info,
         };
-        viewer
-            .chunk_store
-            .set_center(ChunkPos::new(
-                (camera.position[0] as i32).div_euclid(16),
-                (camera.position[2] as i32).div_euclid(16),
-            ));
+        viewer.chunk_store.set_center(ChunkPos::new(
+            (camera.position[0] as i32).div_euclid(16),
+            (camera.position[2] as i32).div_euclid(16),
+        ));
         Ok(viewer)
     }
 
-    /// Whether the UI is drawn.
     pub fn ui_enabled(&self) -> bool {
         self.overlay.switch().enabled()
     }
@@ -363,27 +325,23 @@ impl Viewer {
         self.overlay.switch_mut().set(enabled);
     }
 
-    /// F3: shows or hides the debug screen, which the UI switch gates.
     pub fn toggle_debug_screen(&mut self) -> bool {
         self.debug.switch_mut().toggle()
     }
 
-    /// The lines the F3 screen lists, empty while it is off.
     pub fn debug_lines(&self) -> Vec<String> {
         self.debug.lines().unwrap_or_default()
     }
 
-    /// The renderer's graphics API, GPU and driver, as F3 shows them.
     pub fn renderer_info(&self) -> RendererInfo {
         self.renderer_info.borrow().clone()
     }
 
-    /// Resizes the drawing surface to the window's new size.
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.renderer.resize(PhysicalSize::new(width.max(1), height.max(1)));
+        self.renderer
+            .resize(PhysicalSize::new(width.max(1), height.max(1)));
     }
 
-    /// The columns around the camera, nearest first.
     fn wanted_columns(&self) -> Vec<ChunkPos> {
         let centre = self.camera_chunk();
         let distance = self.render_distance as i32;
@@ -406,7 +364,6 @@ impl Viewer {
         )
     }
 
-    /// Asks the workers for the nearest columns not generated yet.
     fn request_columns(&mut self) -> Result<(), ViewerError> {
         if self.requested.len() >= self.chunk_store.loaded_positions().count() + self.max_in_flight
         {
@@ -434,8 +391,6 @@ impl Viewer {
         Ok(())
     }
 
-    /// Loads the columns the workers finished, as `GameState::load_chunk`
-    /// does for a chunk packet.
     fn load_generated(&mut self) {
         while let Ok((pos, packet)) = self.generated_rx.try_recv() {
             let chunk = packet.and_then(|payload| generated::decode(&payload));
@@ -485,8 +440,6 @@ impl Viewer {
         self.mesh_columns.mark(pos, full, false);
     }
 
-    /// Runs one light update and turns the resulting dirty scope into remesh
-    /// work, as `GameState::update_light` does.
     fn update_light(&mut self) {
         let mut dirty = LightDirty::default();
         self.light_engine.poll_and_run(
@@ -526,7 +479,6 @@ impl Viewer {
         }
     }
 
-    /// Publishes every loaded column's dirty sections to the mesh workers.
     fn rescan_mesh_jobs(&mut self) {
         let loaded: Vec<ChunkPos> = self.chunk_store.loaded_positions().collect();
         for &pos in &loaded {
@@ -549,7 +501,6 @@ impl Viewer {
         }
     }
 
-    /// The frame's ready meshes, uploaded in one transfer.
     fn upload_meshes(&mut self) {
         let results: Vec<ChunkMeshData> = self.mesh_dispatcher.drain_results().collect();
         let mut batch = Vec::with_capacity(results.len());
@@ -586,9 +537,6 @@ impl Viewer {
         }
     }
 
-    /// Drives the cave-cull occlusion walk, as `GameState::update_visibility`
-    /// does: apply a finished walk, then schedule the next on 8-block
-    /// movement or chunk loads.
     fn update_visibility(&mut self, loaded_meshes: bool) -> Result<(), ViewerError> {
         let player_chunk = self.camera_chunk();
         if let Some(bfs) = self.vis_task.as_ref().and_then(|rx| rx.try_recv().ok()) {
@@ -614,7 +562,11 @@ impl Viewer {
         let radius = self
             .chunk_store
             .loaded_positions()
-            .map(|p| (p.x - player_chunk.x).abs().max((p.z - player_chunk.z).abs()))
+            .map(|p| {
+                (p.x - player_chunk.x)
+                    .abs()
+                    .max((p.z - player_chunk.z).abs())
+            })
             .max()
             .unwrap_or(0);
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -634,8 +586,6 @@ impl Viewer {
         Ok(())
     }
 
-    /// Combines a finished walk with the near columns into per-column draw
-    /// masks and pushes them to the GPU cull.
     fn apply_visibility(&mut self, walk: &HashMap<ChunkPos, u32>) {
         let eye = self.renderer.camera_render_position();
         let full = section_mask(self.chunk_store.section_count());
@@ -655,8 +605,6 @@ impl Viewer {
         self.renderer.set_chunk_visibility(masks);
     }
 
-    /// Runs the ticks `dt` seconds make due: texture animations, the block
-    /// light's flicker, the sky's attributes and the lightmap.
     fn tick(&mut self, dt: f32) {
         self.tick_accumulator = (self.tick_accumulator + dt).min(1.0);
         let ticked = self.tick_accumulator >= TICK_SECONDS;
@@ -667,10 +615,10 @@ impl Viewer {
             self.block_light_flicker = tick_block_light_flicker(self.block_light_flicker);
             let plains = self.environment.plains;
             let chunks = &self.chunk_store;
-            self.biome_weights = BiomeWeights::sample(
-                self.renderer.camera_render_position() * 0.25,
-                |x, y, z| chunks.noise_biome(x, y, z).unwrap_or(plains),
-            );
+            self.biome_weights =
+                BiomeWeights::sample(self.renderer.camera_render_position() * 0.25, |x, y, z| {
+                    chunks.noise_biome(x, y, z).unwrap_or(plains)
+                });
             self.environment_probe.tick(self.environment.resolve(
                 self.sky_state.day_time as i64,
                 &self.biome_weights,
@@ -696,11 +644,6 @@ impl Viewer {
         (self.tick_accumulator / TICK_SECONDS).clamp(0.0, 1.0)
     }
 
-    /// Advances the viewer by `dt` seconds and draws a frame.
-    ///
-    /// # Errors
-    /// Fails if a worker can't start. A frame that fails to draw is logged
-    /// and the next one tries again.
     pub fn frame(&mut self, dt: f32) -> Result<(), ViewerError> {
         self.request_columns()?;
         self.load_generated();
@@ -736,7 +679,11 @@ impl Viewer {
 
         let table = self.block_registry.block_state_table();
         let hand_light = {
-            let at = [eye.x.floor() as i32, eye.y.floor() as i32, eye.z.floor() as i32];
+            let at = [
+                eye.x.floor() as i32,
+                eye.y.floor() as i32,
+                eye.z.floor() as i32,
+            ];
             crate::renderer::chunk::block_lighter::LightLevels::new(
                 self.chunk_store.get_sky_light(at[0], at[1], at[2]),
                 self.chunk_store.get_block_light(at[0], at[1], at[2]),
@@ -801,7 +748,6 @@ impl Viewer {
         stats.screen = (self.renderer.screen_width(), self.renderer.screen_height());
     }
 
-    /// The UI elements of this frame, none while the UI is off.
     fn overlay_elements(&mut self) -> Vec<crate::renderer::pipelines::menu_overlay::MenuElement> {
         let (width, height) = (
             self.renderer.screen_width() as f32,
@@ -828,13 +774,11 @@ impl Viewer {
     }
 }
 
-/// Vanilla `LightmapRenderStateExtractor.tick`: the block light's random walk.
 fn tick_block_light_flicker(flicker: f32) -> f32 {
     let r = fastrand::f32;
     (flicker + (r() - r()) * r() * r() * 0.1) * 0.9
 }
 
-/// Bit for one section index, 0 outside a column's addressable sections.
 fn section_bit(si: i32) -> u32 {
     if (0..MAX_SECTIONS).contains(&si) {
         1u32 << si
@@ -849,7 +793,6 @@ fn section_bits(indices: impl IntoIterator<Item = i32>) -> u32 {
         .fold(0u32, |mask, si| mask | section_bit(si))
 }
 
-/// Full mask for an `n`-section column (bits `0..n` set).
 fn section_mask(n: i32) -> u32 {
     if n >= MAX_SECTIONS {
         u32::MAX

@@ -12,8 +12,6 @@ const ICON_FONT_BYTES: &[u8] = include_bytes!("../fonts/fa-solid-900.ttf");
 const ATLAS_SIZE: u32 = 512;
 const RASTER_PX: f32 = 48.0;
 
-/// menu_overlay.frag's texture slots: slot `n` binds its texture at `n` and
-/// its sampler at `TEXTURE_SLOTS + n`.
 const TEXTURE_SLOTS: u32 = 9;
 const TEXTURES: &[rhi::BindGroupLayoutEntry] = &{
     let stage = rhi::ShaderStages::FRAGMENT;
@@ -26,8 +24,6 @@ const TEXTURES: &[rhi::BindGroupLayoutEntry] = &{
     entries
 };
 
-/// The bindings pointing texture slot `slot` at `texture`, sampled with
-/// `sampler`.
 fn slot_bindings(
     slot: u32,
     texture: rhi::backend::TextureHandle,
@@ -42,10 +38,8 @@ fn slot_bindings(
     ]
 }
 
-/// Each [`TEXTURES`] slot's texture and sampler.
 type TextureSlots = [(rhi::backend::TextureHandle, rhi::backend::Sampler); TEXTURE_SLOTS as usize];
 
-/// The [`TEXTURES`] bindings pointing every slot at its texture.
 fn texture_slot_bindings(slots: &TextureSlots) -> Vec<(u32, rhi::backend::BindingResource)> {
     (0..)
         .zip(slots)
@@ -81,9 +75,6 @@ struct Vertex {
 const INITIAL_VERTICES: usize = 16384;
 const VERTEX_SIZE: usize = size_of::<Vertex>();
 
-/// One frame slot's vertex buffer. It grows by replacing the buffer; the old
-/// one may still be read by draws recorded earlier, so it is only freed once
-/// the slot comes round again.
 struct VertexSlot {
     buffer: rhi::backend::Buffer,
     capacity: usize,
@@ -123,8 +114,6 @@ struct DrawOp {
     invert: bool,
 }
 
-/// Ends the current batch (if non-empty) as a `DrawOp` and starts the next
-/// one at `end`.
 fn flush_draw_op(
     draw_ops: &mut Vec<DrawOp>,
     cmd_start: &mut u32,
@@ -150,8 +139,6 @@ struct GlyphEntry {
     v1: f32,
     width_px: f32,
     height_px: f32,
-    /// Text layout at `RASTER_PX`: pen advance, and the bitmap's offset from
-    /// the pen and from the line's top.
     advance_px: f32,
     left_px: f32,
     top_px: f32,
@@ -253,9 +240,6 @@ fn build_font_atlas() -> (FontAtlas, AtlasImage) {
     )
 }
 
-/// Extract an 8x8 RGBA player face (front face at (8,8) with the hat layer at
-/// (40,8) composited over it) from a wide player skin. `None` if the skin is
-/// too small. Shared by the Steve-head sprite and live friend faces.
 pub(crate) fn extract_face_8x8(rgba: &[u8], sw: u32, sh: u32) -> Option<Vec<u8>> {
     extract_face_8x8_with_hat(rgba, sw, sh, true)
 }
@@ -266,7 +250,6 @@ pub(crate) fn extract_face_8x8_with_hat(
     sh: u32,
     hat: bool,
 ) -> Option<Vec<u8>> {
-    // Skins are 64x64 (or 64x32 legacy); both have the face/hat in the top-left.
     if sw < 48 || sh < 16 {
         return None;
     }
@@ -277,7 +260,6 @@ pub(crate) fn extract_face_8x8_with_hat(
             let dst = ((y * 8 + x) * 4) as usize;
             out[dst..dst + 4].copy_from_slice(&rgba[face_off..face_off + 4]);
             if hat {
-                // Composite hat over face (ignore fully transparent hat pixels).
                 let hat_off = (((8 + y) * sw + (40 + x)) * 4) as usize;
                 let ha = rgba[hat_off + 3];
                 if ha > 0 {
@@ -295,22 +277,18 @@ pub(crate) fn extract_face_8x8_with_hat(
     Some(out)
 }
 
-/// RGBA8 pixels and their size.
 struct AtlasImage {
     pixels: Vec<u8>,
     width: u32,
     height: u32,
 }
 
-/// One Minecraft glyph atlas to upload: its square pages, or a single
-/// transparent texel when the fonts are unavailable.
 struct GlyphPages<'a> {
     pixels: &'a [u8],
     size: u32,
     layers: u32,
 }
 
-/// The gray and color glyph atlases from `pixels`.
 fn glyph_pages(pixels: Option<&GlyphAtlasPixels>) -> [GlyphPages<'_>; 2] {
     let pages = |pixels, layers| GlyphPages {
         pixels,
@@ -334,7 +312,6 @@ fn glyph_pages(pixels: Option<&GlyphAtlasPixels>) -> [GlyphPages<'_>; 2] {
     ]
 }
 
-/// The pixel data [`MenuGeometry::new`] produces for the GPU side to upload.
 struct MenuAtlases {
     font: AtlasImage,
     sprites: AtlasImage,
@@ -342,22 +319,17 @@ struct MenuAtlases {
     camera_overlay: AtlasImage,
 }
 
-/// One frame's menu vertices and the draw batches over them.
 struct MenuMesh {
     vertices: Vec<Vertex>,
     ops: Vec<DrawOp>,
 }
 
-/// The CPU side of the menu overlay: atlas layouts, text and sprite
-/// measurement, and vertex building.
 pub struct MenuGeometry {
     atlas: FontAtlas,
     sprite_atlas: SpriteAtlas,
     mc_glyph_map: Option<GlyphMap>,
     obfuscation_rng: ObfuscationRng,
     favicon_regions: std::collections::HashMap<String, [f32; 4]>,
-    /// Inline objects drawn since the app last drained them, so the next
-    /// frame's atlas holds what the text actually asked for.
     drawn_inline_objects: std::collections::HashMap<String, InlineObject>,
     overlay_vignette_uv: [f32; 4],
     overlay_pumpkin_uv: [f32; 4],
@@ -409,15 +381,12 @@ impl MenuGeometry {
         (geometry, atlases)
     }
 
-    /// Builds the vertices and draw batches for `elements`.
     fn build(
         &mut self,
         elements: &[MenuElement],
         item_atlas_uvs: &HashMap<String, [f32; 4]>,
     ) -> MenuMesh {
         let mut vertices: Vec<Vertex> = Vec::with_capacity(elements.len() * 24);
-        // Moved out so the element loop can record into it while `self` is
-        // borrowed for the glyph and atlas sources; it keeps its allocation.
         let mut drawn_objects = std::mem::take(&mut self.drawn_inline_objects);
         let mut deferred_tooltips: Vec<&MenuElement> = Vec::new();
         let mut draw_ops: Vec<DrawOp> = Vec::new();
@@ -448,7 +417,6 @@ impl MenuGeometry {
                     cur_invert,
                 );
                 if let MenuElement::ScissorPush { x, y, w, h } = elem {
-                    // Nested regions clip to the intersection with the enclosing one.
                     let rect = match scissor_stack.last() {
                         Some(outer) => {
                             let x0 = x.max(outer[0]);
@@ -465,8 +433,6 @@ impl MenuGeometry {
                 }
                 continue;
             }
-            // Invert-blended elements need their own pipeline, so they split the
-            // batch the same way a scissor change does.
             let invert = matches!(elem, MenuElement::ImageInvert { .. });
             if invert != cur_invert {
                 flush_draw_op(
@@ -808,7 +774,6 @@ impl MenuGeometry {
                     );
                 }
                 MenuElement::Vignette { w, h, brightness } => {
-                    // Clamp mirrors vanilla Hud.extractVignette.
                     let b = brightness.clamp(0.0, 1.0);
                     push_fullscreen_quad(
                         &mut vertices,
@@ -836,8 +801,6 @@ impl MenuGeometry {
                     v0,
                     brightness,
                 } => {
-                    // Vanilla submitWater UVs: U decreases rightward, V
-                    // increases downward.
                     push_fullscreen_quad(
                         &mut vertices,
                         *w,
@@ -848,7 +811,6 @@ impl MenuGeometry {
                     );
                 }
                 MenuElement::SleepOverlay { w, h, amount } => {
-                    // Vanilla fills 0x101020 at (int)(220 * amount) alpha.
                     let a = (220.0 * amount).floor() / 255.0;
                     let [r, g, b] = [16.0f32, 16.0, 32.0].map(|c| c / 255.0 * a);
                     push_fullscreen_quad(&mut vertices, *w, *h, [0.0; 4], [r, g, b, a], 10.0);
@@ -857,7 +819,6 @@ impl MenuGeometry {
             }
         }
 
-        // Deferred tooltips always draw with the normal pipeline.
         if cur_invert {
             flush_draw_op(
                 &mut draw_ops,
@@ -932,7 +893,6 @@ impl MenuGeometry {
                 screen_w: *screen_w,
                 screen_h: *screen_h,
             };
-            // A plain-text tooltip wraps to its own lines first.
             let wrapped;
             let lines = match elem {
                 MenuElement::Tooltip { text, .. } => {
@@ -980,7 +940,6 @@ impl MenuGeometry {
         self.text_width_in(text, scale, None)
     }
 
-    /// Text width in the SGA (`minecraft:alt`) glyphs.
     pub fn mc_text_width_sga(&self, text: &str, scale: f32) -> f32 {
         self.text_width_in(text, scale, Some("minecraft:alt"))
     }
@@ -997,8 +956,6 @@ impl MenuGeometry {
         (run_advance(gm, text, font, false, false) * scale / gm.cell_h as f32).ceil()
     }
 
-    /// Width of a multi-span line, honoring each span's font, bold and inline
-    /// objects.
     pub fn spans_width(&self, spans: &[TextSpan], scale: f32) -> f32 {
         let Some(ref gm) = self.mc_glyph_map else {
             return 0.0;
@@ -1018,7 +975,6 @@ impl MenuGeometry {
         (raw * scale / gm.cell_h as f32).ceil()
     }
 
-    /// Greedy word-wrap of a plain tooltip string to `max_w`.
     fn wrap_tooltip_text(&self, text: &str, scale: f32, max_w: f32) -> Vec<String> {
         let space_w = self.mc_text_width(" ", scale);
         let mut lines: Vec<String> = Vec::new();
@@ -1046,8 +1002,6 @@ impl MenuGeometry {
         lines
     }
 
-    /// `GuiGraphicsExtractor.tooltip`, which draws nothing when it has no
-    /// lines.
     fn push_tooltip(
         &self,
         vertices: &mut Vec<Vertex>,
@@ -1099,8 +1053,6 @@ impl MenuGeometry {
         }
     }
 
-    /// `TooltipRenderUtil`'s background and frame over `bg`; 9 and 10 are the
-    /// two sprites' own `.mcmeta` nine-slice borders.
     fn push_tooltip_frame(&self, vertices: &mut Vec<Vertex>, [x, y, w, h]: [f32; 4], px: f32) {
         let white = [1.0f32; 4];
         if let Some(bg) = self.sprite_atlas.regions.get(&SpriteId::TooltipBackground) {
@@ -1111,8 +1063,6 @@ impl MenuGeometry {
         }
     }
 
-    /// `GuiGraphicsExtractor.tooltip` over the bundle's name and its
-    /// `ClientBundleTooltip`, all laid out in whole gui units.
     #[allow(clippy::too_many_arguments)]
     fn push_bundle_tooltip(
         &self,
@@ -1159,13 +1109,11 @@ impl MenuGeometry {
         } else {
             Vec::new()
         };
-        // `getHeight`: the grid or the wrapped description, then the bar.
         let body_h = if items.is_empty() {
             empty_lines.len() as i32 * 9
         } else {
             rows * 24
         };
-        // The name line is 10 tall and the image follows a 2px first-line gap.
         let w = gui_width(self.spans_width(image.title, scale)).max(96);
         let h = 10 + body_h + 21;
         let layout = tooltip_box(draw, px, w as f32 * px, h as f32 * px);
@@ -1179,7 +1127,6 @@ impl MenuGeometry {
             layout.text_y,
         );
 
-        // `getContentXOffset`.
         let left = layout.text_x + ((w - 96) / 2) as f32 * px;
         let top = layout.text_y + 12.0 * px;
         let centered = |label: &str, center_x: f32| {
@@ -1282,7 +1229,6 @@ impl MenuGeometry {
                     .ok()
                     .and_then(|i| items.get(i))
             {
-                // `extractSelectedItemTooltip`: its own tooltip, centred above.
                 let name = crate::ui::common::styled_hover_name(data);
                 let center = gui_width(layout.text_x) + w / 2 - 12;
                 let anchor = center - gui_width(self.spans_width(&name, scale)) / 2;
@@ -1300,7 +1246,6 @@ impl MenuGeometry {
             }
         }
 
-        // `extractProgressbar`.
         let bar_y = top + (body_h + 4) as f32 * px;
         let fill = image.weight.mul_and_truncate(94).clamp(0, 94) as f32;
         let fill_id = if image.weight.is_full() {
@@ -1359,8 +1304,6 @@ impl MenuGeometry {
         }
     }
 
-    /// `GuiGraphicsExtractor.item` plus `itemDecorations` at `(x, y)`: the
-    /// icon, then the stack's bar and count.
     #[allow(clippy::too_many_arguments)]
     fn push_tooltip_item(
         &self,
@@ -1392,7 +1335,6 @@ impl MenuGeometry {
                 0.0,
             );
         }
-        // TODO: the cooldown overlay, as in `common::push_item_icon`.
         if let Some((width, color)) = crate::ui::common::item_bar(data) {
             push_rect(
                 vertices,
@@ -1431,8 +1373,6 @@ impl MenuGeometry {
         }
     }
 
-    /// Pushes Minecraft-font text, or Montserrat before any Minecraft font
-    /// has loaded (the first-run download screen).
     #[allow(clippy::too_many_arguments)]
     fn push_text_into(
         &self,
@@ -1473,16 +1413,12 @@ impl MenuGeometry {
         }
     }
 
-    /// The inline objects drawn since the last call, which the app loads into
-    /// the atlas for the next frame.
     pub fn drain_drawn_inline_objects(
         &mut self,
     ) -> std::collections::hash_map::Drain<'_, String, InlineObject> {
         self.drawn_inline_objects.drain()
     }
 
-    /// Points an inline object's key at one of its animation frames, which
-    /// were packed under their own keys.
     pub fn set_inline_object_frame(&mut self, key: &str, frame_key: &str) {
         if let Some(region) = self.favicon_regions.get(frame_key).copied() {
             self.favicon_regions.insert(key.to_owned(), region);
@@ -1493,7 +1429,6 @@ impl MenuGeometry {
 pub struct MenuOverlayPipeline {
     pub geometry: MenuGeometry,
     pipeline: rhi::backend::RenderPipeline,
-    /// Vanilla `RenderPipelines.CROSSHAIR`: same shaders, INVERT blend.
     invert_pipeline: rhi::backend::RenderPipeline,
     pipeline_layout: rhi::backend::PipelineLayout,
     globals_layout: rhi::backend::BindGroupLayout,
@@ -1507,7 +1442,6 @@ pub struct MenuOverlayPipeline {
     item_placeholder: TextureResources,
     mc_font: TextureResources,
     mc_font_color: TextureResources,
-    /// Glyph atlas layer cap from the device, reused on reload.
     font_layer_limit: u32,
     vertex_slots: Vec<VertexSlot>,
     favicon: TextureResources,
@@ -1538,7 +1472,7 @@ impl MenuOverlayPipeline {
         let (globals_sets, globals_buffers) = util::create_uniform_sets(
             device,
             globals_layout,
-            size_of::<[f32; 2]>() as u64,
+            size_of::<[f32; 4]>() as u64,
             "menu_globals",
         );
 
@@ -1606,7 +1540,6 @@ impl MenuOverlayPipeline {
                 atlases.camera_overlay.width,
                 atlases.camera_overlay.height,
             ),
-            // Both source textures ship mcmeta `blur: true`.
             sampler: rhi::backend::create_sampler(device, &rhi::SamplerDesc::LINEAR),
         };
 
@@ -1617,13 +1550,9 @@ impl MenuOverlayPipeline {
         );
         let underwater = TextureResources {
             texture: util::create_sampled_texture(device, "underwater_overlay", &pixels, w, h),
-            // Repeat wrapping: the overlay tiles 4x and scrolls with the look
-            // direction.
             sampler: rhi::backend::create_sampler(device, &rhi::SamplerDesc::NEAREST_REPEAT),
         };
 
-        // In menu_overlay.frag slot order; blur (4) starts as a font-atlas
-        // placeholder until set_blur_texture.
         let slots = [
             font.slot(),
             sprite.slot(),
@@ -1666,8 +1595,6 @@ impl MenuOverlayPipeline {
         })
     }
 
-    /// Rebuilds the glyph atlases from the current pack stack. Call with the
-    /// device idle: the old textures are destroyed right away.
     pub fn reload_minecraft_fonts(
         &mut self,
         device: &rhi::backend::Device,
@@ -1711,10 +1638,6 @@ impl MenuOverlayPipeline {
         );
     }
 
-    /// Like [`draw`], but writes vertices starting at `vertex_base` in the
-    /// frame's vertex buffer and returns the next free index, so it can be
-    /// called more than once per frame (e.g. a backdrop before the blur and
-    /// a dialog after).
     #[allow(clippy::too_many_arguments)]
     pub fn draw_from(
         &mut self,
@@ -1727,7 +1650,7 @@ impl MenuOverlayPipeline {
         item_atlas_uvs: &HashMap<String, [f32; 4]>,
         vertex_base: u32,
     ) -> u32 {
-        let globals: [f32; 2] = [screen_w, screen_h];
+        let globals: [f32; 4] = [screen_w, screen_h, 0.0, 0.0];
         self.globals_buffers[frame].write(bytemuck::cast_slice(&globals));
 
         let MenuMesh {
@@ -1740,8 +1663,6 @@ impl MenuOverlayPipeline {
         }
 
         let slot = &mut self.vertex_slots[frame];
-        // The first draw of a frame runs after the slot's fence, so buffers
-        // replaced last time round are no longer in use.
         if vertex_base == 0 && !slot.retired.is_empty() {
             slot.free_retired(device);
         }
@@ -1770,8 +1691,6 @@ impl MenuOverlayPipeline {
                 self.pipeline
             }
         };
-        // Bind groups and vertex buffer stay valid across pipeline switches
-        // (both pipelines share the layout).
         let mut bound_invert = draw_ops[0].invert;
         pass.set_pipeline(&pipeline_for(bound_invert));
         pass.set_bind_groups(0, &[self.globals_sets[frame], self.tex_set]);
@@ -1839,8 +1758,6 @@ impl MenuOverlayPipeline {
         self.geometry.sprite_atlas.regions.contains_key(&id)
     }
 
-    /// Rebuilds the sprite atlas, for sprites whose files arrived after it was
-    /// built.
     pub fn reload_sprite_atlas(
         &mut self,
         device: &rhi::backend::Device,
@@ -1956,7 +1873,6 @@ impl MenuOverlayPipeline {
 
 pub struct TooltipLine {
     pub spans: Vec<TextSpan>,
-    /// Aligned against the widest line in the tooltip instead of the left.
     pub right_align: bool,
 }
 
@@ -1968,12 +1884,10 @@ impl TooltipLine {
         }
     }
 
-    /// A single-color line.
     pub fn new(text: String, color: [f32; 4]) -> Self {
         Self::from_spans(vec![TextSpan::new(text, color)])
     }
 
-    /// A single-color right-aligned line.
     pub fn right_aligned(text: String, color: [f32; 4]) -> Self {
         Self {
             right_align: true,
@@ -2046,7 +1960,6 @@ pub enum MenuElement {
         sprite: SpriteId,
         tint: [f32; 4],
     },
-    /// `Image` drawn with vanilla's INVERT blend (`RenderPipelines.CROSSHAIR`).
     ImageInvert {
         x: f32,
         y: f32,
@@ -2071,8 +1984,6 @@ pub enum MenuElement {
         h: f32,
         item_name: String,
         item_stack: Option<azalea_inventory::ItemStackData>,
-        /// Vanilla GUI `item(...)` supplies the local LivingEntity owner;
-        /// `fakeItem(...)` supplies none. Team tint evaluation depends on this.
         use_player_team: bool,
         item_tints: Vec<u32>,
         tint: [f32; 4],
@@ -2085,9 +1996,6 @@ pub enum MenuElement {
         centered: bool,
         shadow: bool,
     },
-    /// Vanilla `SplashRenderer`: text laid out unrotated from `(x, y)`, then
-    /// spun about `pivot` (radians, clockwise on screen like vanilla's
-    /// `Matrix3x2f.rotate`).
     McTextRotated {
         x: f32,
         y: f32,
@@ -2123,13 +2031,11 @@ pub enum MenuElement {
         screen_w: f32,
         screen_h: f32,
     },
-    /// `ClientBundleTooltip` under the bundle's styled name.
     BundleTooltip {
         x: f32,
         y: f32,
         title: Vec<TextSpan>,
         items: Vec<azalea_inventory::ItemStack>,
-        /// Per-item tint palettes, parallel to `items`; filled by the renderer.
         item_tints: Vec<Vec<u32>>,
         selected: i32,
         weight: crate::ui::bundle::Frac,
@@ -2159,8 +2065,6 @@ pub enum MenuElement {
         size: f32,
         address: String,
     },
-    /// A player's 8x8 skin face, looked up in the shared face/favicon atlas by
-    /// UUID; falls back to the default `SteveHead` sprite until it loads.
     SkinFace {
         x: f32,
         y: f32,
@@ -2168,25 +2072,17 @@ pub enum MenuElement {
         uuid: String,
         tint: [f32; 4],
     },
-    /// Split marker for the menu draw: elements before it are rendered into the
-    /// scene so the blur pass captures them; elements after are drawn sharp on
-    /// top. Used to render the title screen blurred behind the Friends dialog.
     BlurBackdrop,
-    /// Vanilla `blurBeforeThisStratum`: elements before it are blurred in
-    /// place by the Menu Background Blur, and the rest drawn sharp on top.
     BlurBackground,
-    /// Full-screen vignette, multiplying the framebuffer down by `brightness`.
     Vignette {
         w: f32,
         h: f32,
         brightness: f32,
     },
-    /// Full-screen pumpkin-blur camera overlay.
     PumpkinOverlay {
         w: f32,
         h: f32,
     },
-    /// Full-screen underwater tint, its 4x-tiled UVs scrolled to `(u0, v0)`.
     UnderwaterOverlay {
         w: f32,
         h: f32,
@@ -2194,8 +2090,6 @@ pub enum MenuElement {
         v0: f32,
         brightness: f32,
     },
-    /// Full-screen sleep fade (vanilla Hud.extractSleepOverlay): 0x101020
-    /// filled at alpha (int)(220 * amount) / 255.
     SleepOverlay {
         w: f32,
         h: f32,
@@ -2236,10 +2130,7 @@ pub enum SpriteId {
     HotbarAttackIndicatorProgress,
     EffectBackground,
     EffectBackgroundAmbient,
-    /// Index into `mob_effect::MOB_EFFECTS`.
     MobEffect(u8),
-    /// Boss bar sprites, indexed by the wire ordinals: color 0..=6 (pink,
-    /// blue, red, green, yellow, purple, white), notch 0..=3 (6/10/12/20).
     BossBarBackground(u8),
     BossBarProgress(u8),
     BossBarNotchedBackground(u8),
@@ -2529,20 +2420,10 @@ struct SpriteAtlas {
 const INV_TEX_W: u32 = 176;
 const INV_TEX_H: u32 = 166;
 
-/// Gutter kept on all four sides of every sprite. Sprites are sampled with
-/// NEAREST, so a quad edge landing a hair outside its region reads the
-/// neighbour; a transparent moat makes that a no-op instead of a smear. Vanilla
-/// bakes the same symmetric one-texel pad at mip 0 (`Stitcher.registerSprite`).
 const SPRITE_PAD: u32 = 1;
 
-/// Vulkan's spec floor for `maxImageDimension2D`, so this is safe on every
-/// conformant device without querying it. The GUI sprites pack into a fraction
-/// of it, so the cap is never binding in practice.
 const MAX_SPRITE_ATLAS_SIZE: u32 = 4096;
 
-/// Spins already-built vertices about a screen-space pivot. Every quad the
-/// pipeline emits is axis-aligned, so rotation is applied after the fact
-/// rather than threaded through each push helper.
 fn rotate_verts(verts: &mut [Vertex], pivot: (f32, f32), rotation: f32) {
     let (sin, cos) = rotation.sin_cos();
     for v in verts {
@@ -2552,10 +2433,6 @@ fn rotate_verts(verts: &mut [Vertex], pivot: (f32, f32), rotation: f32) {
     }
 }
 
-/// Downscales a straight-alpha sprite, filtering it premultiplied so the
-/// transparent border's black stays out of the edge texels' colour. The atlas
-/// stores straight alpha and the shader premultiplies at sample time, so a
-/// naive filter would darken every anti-aliased edge twice over.
 fn downscale_straight_alpha(src: &image::RgbaImage, w: u32, h: u32) -> image::RgbaImage {
     let mut premul = image::Rgba32FImage::new(src.width(), src.height());
     for (dst, src) in premul.pixels_mut().zip(src.pixels()) {
@@ -2568,8 +2445,6 @@ fn downscale_straight_alpha(src: &image::RgbaImage, w: u32, h: u32) -> image::Rg
         ]);
     }
 
-    // Lanczos rings and the resize clamps each channel on its own, so colour
-    // can land above its own alpha; undo the premultiply against that clamp.
     let scaled = image::imageops::resize(&premul, w, h, image::imageops::FilterType::Lanczos3);
     let mut out = image::RgbaImage::new(w, h);
     for (dst, src) in out.pixels_mut().zip(scaled.pixels()) {
@@ -2591,8 +2466,6 @@ fn downscale_straight_alpha(src: &image::RgbaImage, w: u32, h: u32) -> image::Rg
     out
 }
 
-/// The Bedrock UI textures the Bedrock title screen draws, by path from
-/// `textures/ui` without the extension.
 const BEDROCK_SPRITES: [(SpriteId, &str); 17] = [
     (SpriteId::BedrockButton, "button_borderless_light"),
     (SpriteId::BedrockButtonHover, "button_borderless_lighthover"),
@@ -2628,8 +2501,6 @@ const BEDROCK_SPRITES: [(SpriteId, &str); 17] = [
     (SpriteId::BedrockRadioOffHover, "radio_off_hover"),
 ];
 
-/// The `nineslice_size` from the `.json` Bedrock keeps beside a texture, in
-/// texels. Only the single-number form is read; anything else is unsliced.
 fn bedrock_nine_slice(dir: &Path, stem: &str) -> f32 {
     pomme_vfs::read(dir.join(format!("{stem}.json")))
         .ok()
@@ -3259,8 +3130,6 @@ fn build_sprite_atlas(
             "minecraft/textures/gui/sprites/widget/scroller_background.png",
             1.0,
         ),
-        // `DialogScreen.WARNING_BUTTON_SPRITES` and `Checkbox`, all plain
-        // 20x20 blits.
         (
             SpriteId::WarningButton,
             "minecraft/textures/gui/sprites/dialog/warning_button.png",
@@ -3296,7 +3165,6 @@ fn build_sprite_atlas(
             "minecraft/textures/gui/sprites/friends/background.png",
             8.0,
         ),
-        // `CommonButtons` icons for the title screen's bottom row.
         (
             SpriteId::IconFriends,
             "minecraft/textures/gui/sprites/friends/friends.png",
@@ -3608,7 +3476,6 @@ fn build_sprite_atlas(
         }
     }
 
-    // Steve head: 8x8 face composited with the 8x8 hat overlay from the wide skin.
     let steve_path = resolve_asset_path(
         jar_assets_dir,
         asset_index,
@@ -3631,8 +3498,6 @@ fn build_sprite_atlas(
         }
     }
 
-    // Locator bar background: pre-tile the 12x5 nine-slice (borders L/R 5,
-    // 2px center repeated) to its fixed 182x5 draw size.
     let locator_bg_path = resolve_asset_path(
         jar_assets_dir,
         asset_index,
@@ -3678,7 +3543,6 @@ fn build_sprite_atlas(
         }
     }
 
-    // Locator arrows: each 7x10 strip holds two 7x5 animation frames.
     for (frame0, frame1, asset_key) in [
         (
             SpriteId::LocatorArrowUp0,
@@ -3726,7 +3590,6 @@ fn build_sprite_atlas(
         }
     }
 
-    // Placeholder for unknown waypoint styles (vanilla shows missingno).
     images.push((
         SpriteId::LocatorDotMissing,
         vec![255, 0, 255, 255],
@@ -3735,8 +3598,6 @@ fn build_sprite_atlas(
         0.0,
     ));
 
-    // Container backgrounds live in a 256x256 atlas; crop out the used region
-    // from texel `src` (vanilla's blit `u`, `v`).
     for (id, path, src, max_w, max_h) in [
         (
             SpriteId::RecipeBookBackground,
@@ -3850,8 +3711,6 @@ fn build_sprite_atlas(
             195,
             136,
         ),
-        // Frame 0 of the animated portal strip, stretched full-screen by the
-        // portal camera overlay. TODO: animate.
         (
             SpriteId::NetherPortal,
             "minecraft/textures/block/nether_portal.png",
@@ -3909,9 +3768,6 @@ fn build_sprite_atlas(
         }
     }
 
-    // `LogoRenderer` blits only the top 44/64 of minecraft.png and 14/16 of
-    // edition.png. Both are supersampled, so crop by fraction; a row-major
-    // prefix is contiguous, so it's a truncate.
     for (id, image, logical_h, used_h) in [
         (
             SpriteId::MinecraftLogo,
@@ -3946,10 +3802,6 @@ fn build_sprite_atlas(
         }
     }
 
-    // The credits roll draws the mark at 44 GUI units, so 44 * gui_scale px:
-    // 176 at 1080p, 264 at 1440p, 396 at 4K on the default auto scale. The
-    // atlas sampler is NEAREST, so 256 is the size that straddles that range
-    // with the least resampling either way.
     const POMME_LOGO_SIZE: u32 = 256;
     match image::load_from_memory(crate::assets::POMME_ICON_PNG) {
         Ok(img) => {
@@ -3965,8 +3817,6 @@ fn build_sprite_atlas(
         Err(e) => tracing::warn!("Failed to load pomme logo: {e}"),
     }
 
-    // The Bedrock title draws at 55% of the screen width, 1056 px at 1080p, so
-    // 1024 keeps the NEAREST sampler close to 1:1 there.
     const BEDROCK_TITLE_W: u32 = 1024;
     if let Some(dir) = bedrock_ui_dir {
         match crate::assets::load_image(&dir.join("title.png")) {
@@ -4005,9 +3855,6 @@ fn build_sprite_atlas(
             .filter(|(_, placement)| placement.is_none())
             .map(|(sprite, _)| sprite.0)
             .collect();
-        // Vanilla throws `StitcherException` here and turns it into a crash
-        // report. A dropped sprite renders as nothing at all, which is far
-        // harder to notice, so shout in release and hard-fail in dev.
         tracing::error!(
             "Sprite atlas overflowed the {MAX_SPRITE_ATLAS_SIZE}px cap; {} sprites will not \
              render: {dropped:?}",
@@ -4044,9 +3891,6 @@ fn build_sprite_atlas(
         regions.len()
     );
 
-    // `upload_image` copies `atlas_size * atlas_size * 4` bytes regardless of
-    // the staging buffer's length, so `pixels` has to stay sized off the packed
-    // `atlas_size` above; feeding the upload a size of its own would read past it.
     (
         SpriteAtlas { regions },
         AtlasImage {
@@ -4076,9 +3920,6 @@ fn load_overlay_rgba(
     }
 }
 
-/// Compose the full-screen camera overlay textures (vignette + pumpkin blur)
-/// side by side into one linear-sampled image. Returns the image and each
-/// half's UV rect, inset half a texel so filtering never crosses the seam.
 fn build_camera_overlay_texture(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
@@ -4131,8 +3972,6 @@ struct FontTextureUpload<'a> {
     name: &'static str,
 }
 
-/// Uploads the gray (R8) and colored glyph atlases, with 1x1 placeholders when
-/// there are no fonts or no colored glyphs.
 fn create_font_textures(
     device: &rhi::backend::Device,
     pixels: Option<&GlyphAtlasPixels>,
@@ -4168,8 +4007,9 @@ fn create_font_texture(
     upload: FontTextureUpload<'_>,
 ) -> Result<TextureResources, String> {
     let sampler = rhi::backend::try_create_sampler(device, &rhi::SamplerDesc::NEAREST)?;
+    let layers = upload.extent.layers.max(2);
     let desc = rhi::TextureDesc {
-        layers: upload.extent.layers,
+        layers: if layers % 6 == 0 { layers + 1 } else { layers },
         format: upload.format,
         dimension: rhi::TextureViewDimension::D2Array,
         ..util::sampled_texture_desc(upload.name, upload.extent.width, upload.extent.height)
@@ -4211,7 +4051,6 @@ struct TextureResources {
 }
 
 impl TextureResources {
-    /// The texture and sampler a menu_overlay.frag slot binds.
     fn slot(&self) -> (rhi::backend::TextureHandle, rhi::backend::Sampler) {
         (self.texture.handle(), self.sampler)
     }
@@ -4254,8 +4093,6 @@ fn blit_image(
     }
 }
 
-/// Draw a quad from the string-keyed image atlas (favicons / friend faces),
-/// falling back to a sprite-atlas sprite when the key hasn't loaded yet.
 #[allow(clippy::too_many_arguments)]
 fn push_atlas_image(
     verts: &mut Vec<Vertex>,
@@ -4374,9 +4211,6 @@ fn push_rect(
     radius: f32,
     color: [f32; 4],
 ) {
-    // `GuiGraphics.fill` is a hard integer quad. Radius 0 must not go through
-    // the rounded-rect SDF: that softens every edge and adds a border band,
-    // which seams adjacent chat rows and shifts translucent fill opacity.
     let (color, mode) = if radius <= 0.0 {
         (premultiplied(color), 10.0)
     } else {
@@ -4399,8 +4233,6 @@ fn push_rect(
     );
 }
 
-/// The premultiplied form mode 10 expects. The rounded-rect mode premultiplies
-/// in the shader and converts no gamma, so neither does this.
 fn premultiplied([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     [r * a, g * a, b * a, a]
 }
@@ -4460,7 +4292,6 @@ fn push_gradient_rect(
     }
 }
 
-/// Montserrat text from `x`; returns where the pen ends.
 fn push_plain_text(
     verts: &mut Vec<Vertex>,
     atlas: &FontAtlas,
@@ -4582,7 +4413,6 @@ fn push_nine_slice(
     let bu = (tex_border / region.src_w) * uv_w;
     let bv = (tex_border / region.src_h) * uv_h;
 
-    // Snap to integer pixels so NEAREST sampling stays inside the region.
     let x0 = x.round();
     let y0 = y.round();
     let x1 = (x + w).round();
@@ -4623,8 +4453,6 @@ fn push_nine_slice(
     }
 }
 
-/// Vanilla `Font`'s persistent `RandomSource` (LegacyRandomSource), drawn once
-/// per obfuscated glyph.
 #[derive(Clone, Copy)]
 struct ObfuscationRng {
     seed: u64,
@@ -4673,12 +4501,8 @@ struct McTextSources<'a> {
     sprite_atlas: &'a SpriteAtlas,
 }
 
-/// The side of the atlas cell an inline object's tile is packed into.
 pub const ATLAS_CELL: u32 = 64;
 
-/// Whether the object has a glyph at all: a player head always does, an atlas
-/// sprite only in one of the atlases the client stitches
-/// (`AtlasManager.KNOWN_ATLASES`).
 fn object_has_glyph(object: &InlineObject) -> bool {
     match object {
         InlineObject::Player { .. } => true,
@@ -4694,7 +4518,6 @@ struct McTextDraw {
     drop_shadow: bool,
 }
 
-/// Where a tooltip was asked for, in framebuffer pixels.
 #[derive(Clone, Copy)]
 struct McTooltipDraw {
     x: f32,
@@ -4704,15 +4527,12 @@ struct McTooltipDraw {
     screen_h: f32,
 }
 
-/// A laid-out tooltip, in framebuffer pixels.
 struct TooltipBox {
     text_x: f32,
     text_y: f32,
-    /// Background and frame rect, `[x, y, w, h]`.
     bg: [f32; 4],
 }
 
-/// The bundle half of a `BundleTooltip` element.
 struct BundleImage<'a> {
     title: &'a [TextSpan],
     items: &'a [azalea_inventory::ItemStack],
@@ -4721,11 +4541,7 @@ struct BundleImage<'a> {
     weight: crate::ui::bundle::Frac,
 }
 
-/// `DefaultTooltipPositioner` then `TooltipRenderUtil.extractTooltipBackground`
-/// (PADDING 3, MARGIN 9) around a `content_w` x `content_h` box. Positioning
-/// runs in whole gui units of `px` framebuffer pixels, as vanilla's does.
 fn tooltip_box(draw: McTooltipDraw, px: f32, content_w: f32, content_h: f32) -> TooltipBox {
-    // `Window.guiScaledWidth` rounds up; the cursor's gui position truncates.
     let screen_w = (draw.screen_w / px).ceil() as i32;
     let screen_h = (draw.screen_h / px).ceil() as i32;
     let w = (content_w / px).round() as i32;
@@ -4752,19 +4568,14 @@ fn tooltip_box(draw: McTooltipDraw, px: f32, content_w: f32, content_h: f32) -> 
     }
 }
 
-/// `localY += line.getHeight(font) + (i == 0 ? 2 : 0)`: every line after the
-/// first sits two pixels lower.
 fn tooltip_line_y(text_y: f32, index: usize, line_h: f32, px: f32) -> f32 {
     text_y + index as f32 * line_h + if index > 0 { 2.0 * px } else { 0.0 }
 }
 
-/// Advance of an inline object glyph in font pixels (vanilla
-/// `PlainTextRenderable` is 8 wide).
 fn inline_object_advance(bold: bool) -> f32 {
     8.0 + if bold { 1.0 } else { 0.0 }
 }
 
-/// Summed advance of `text` in font pixels.
 fn run_advance(
     gm: &GlyphMap,
     text: &str,
@@ -4784,8 +4595,6 @@ fn run_advance(
         .sum()
 }
 
-/// An underline or strikethrough quad. Adjacent glyphs' effects that abut
-/// with the same colors are merged into one quad.
 struct McEffect {
     rect: [f32; 4],
     color: [f32; 4],
@@ -4838,16 +4647,12 @@ fn push_mc_text(
     let mut cx = x;
     let mut cy = y;
     let mut line = 0u32;
-    // Vanilla draws every glyph before the effects.
     let mut strikethroughs = Vec::new();
     let mut underlines = Vec::new();
 
     'spans: for span in spans {
         let mut span_position = 0u64;
         let font = span.font.as_deref();
-        // Vanilla `PreparedTextBuilder.getShadowColor`: an explicit style
-        // shadow always draws (alpha scaled by the text's); the default 25%
-        // shadow only with drop shadow.
         let shadow_color = match span.shadow_color {
             Some(mut explicit) => {
                 explicit[3] *= span.color[3];
@@ -4914,8 +4719,6 @@ fn push_mc_text(
                 inline_object_advance(span.bold) * px_scale
             } else {
                 let gi = if ch == '\u{fffc}' && span.inline_object.is_some() {
-                    // `FontManager.getSpriteFont`: an atlas with no provider
-                    // renders the missing-font glyph.
                     gm.missing()
                 } else if span.obfuscated && ch != ' ' {
                     let width = gm.glyph(ch, font).advance.ceil() as i32;
@@ -4954,8 +4757,6 @@ fn push_mc_text(
     }
 }
 
-/// Vanilla `BakedSheetGlyph.renderChar`: the shadow copy, then the glyph, each
-/// doubled at the bold offset.
 fn push_mc_glyph_quads(
     verts: &mut Vec<Vertex>,
     gi: &GlyphInfo,
@@ -4968,7 +4769,6 @@ fn push_mc_glyph_quads(
         return;
     }
     let inv = 1.0 / GLYPH_ATLAS_SIZE as f32;
-    // `BakedSheetGlyph.render` shears each edge by 1 - 0.25 * its y.
     let shear = if span.italic {
         [
             (1.0 - 0.25 * gi.top) * px_scale,
@@ -5024,7 +4824,6 @@ fn push_mc_effect(verts: &mut Vec<Vertex>, effect: &McEffect, shadow_offset: f32
     push_mc_fill(verts, x0, y0, w, h, effect.color);
 }
 
-/// A hard-edged effect quad: the same fill `push_rect` emits at radius 0.
 fn push_mc_fill(verts: &mut Vec<Vertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
     push_quad(
         verts,
@@ -5050,7 +4849,6 @@ struct GlyphQuad {
     layer: u32,
     uv: [f32; 4],
     colored: bool,
-    /// Italic x offset of the top and bottom edges.
     shear: [f32; 2],
 }
 
@@ -5089,7 +4887,6 @@ const VERTEX_BUFFERS: [rhi::VertexBufferLayout<'static>; 1] = [rhi::vertex_buffe
     [Float32x2, Float32x2, Float32x4, Float32, Float32x2, Float32]
 )];
 
-/// The overlay pipeline, with the INVERT blend when `invert`.
 fn create_pipeline(
     device: &rhi::backend::Device,
     targets: rhi::backend::PipelineTargets,
@@ -5097,8 +4894,6 @@ fn create_pipeline(
     invert: bool,
 ) -> rhi::backend::RenderPipeline {
     let desc = rhi::RenderPipelineDesc {
-        // Transparent texels output rgb 0 / alpha 0, so INVERT's
-        // ONE_MINUS_SRC_COLOR keeps dst.
         blend: Some(if invert {
             rhi::BlendState::INVERT
         } else {
@@ -5118,7 +4913,6 @@ fn create_pipeline(
 mod tests {
     use super::*;
 
-    /// A tooltip at gui scale 1, where one gui unit is one framebuffer pixel.
     fn unscaled_tooltip(x: f32, y: f32) -> McTooltipDraw {
         McTooltipDraw {
             x,
@@ -5139,7 +4933,6 @@ mod tests {
 
     #[test]
     fn tooltip_flips_left_from_the_offset_position() {
-        // `DefaultTooltipPositioner`: `x + 12`, then `max(x - 24 - w, 4)`.
         let flipped = tooltip_box(unscaled_tooltip(990.0, 100.0), 1.0, 40.0, 8.0);
         assert_eq!(flipped.text_x, 990.0 + 12.0 - 24.0 - 40.0);
         let clamped = tooltip_box(unscaled_tooltip(990.0, 100.0), 1.0, 995.0, 8.0);
@@ -5148,7 +4941,6 @@ mod tests {
 
     #[test]
     fn tooltip_positions_in_whole_gui_units() {
-        // At gui scale 3 the 12-unit offset is 36px, from the truncated cursor.
         let draw = McTooltipDraw {
             scale: 24.0,
             ..unscaled_tooltip(100.0, 100.0)
@@ -5196,8 +4988,6 @@ mod tests {
 
     #[test]
     fn italic_shear_matches_baked_sheet_glyph() {
-        // An ASCII glyph spans y 0..8: vanilla shears the top edge by +1 and
-        // the bottom by -1.
         let glyph = GlyphInfo {
             atlas_layer: 0,
             colored: false,
@@ -5251,8 +5041,6 @@ mod tests {
 
     #[test]
     fn downscale_keeps_colour_out_of_the_transparent_border() {
-        // Opaque white against the transparent black an anti-aliased sprite
-        // sits on; filtering straight alpha would leave the edge texels grey.
         let mut src = image::RgbaImage::new(16, 16);
         for (x, _, px) in src.enumerate_pixels_mut() {
             *px = if x < 8 {

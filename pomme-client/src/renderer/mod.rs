@@ -12,8 +12,6 @@ pub(crate) mod shader;
 pub(crate) mod util;
 
 pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;
-/// iOS keeps a backgrounded app's view and Metal layer, so its surface
-/// outlives a suspend; Android takes the native window away.
 const KEEPS_SURFACE_WHEN_SUSPENDED: bool = cfg!(target_os = "ios");
 
 use std::collections::{HashMap, HashSet};
@@ -64,7 +62,20 @@ use crate::renderer::pipelines::item_entity::ItemEntityPipeline;
 use crate::ui::font::{FontOptions, FontSources};
 use crate::world::block::render_assets::{BlockRenderAssets, BlockRenderView};
 
-/// The live atlas's layout, so meshes bake in UVs that match it.
+static PRELOADED_RENDER_ASSETS: std::sync::Mutex<Option<BlockRenderAssets>> =
+    std::sync::Mutex::new(None);
+
+pub fn preload_render_assets(
+    jar_assets_dir: &Path,
+    asset_index: &Option<AssetIndex>,
+    cache_dir: &Path,
+) {
+    let assets = BlockRenderAssets::load(jar_assets_dir, asset_index, Some(cache_dir), None);
+    *PRELOADED_RENDER_ASSETS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(assets);
+}
+
 impl MeshSource for Renderer {
     fn shared_render_assets(&self) -> Arc<BlockRenderAssets> {
         Arc::clone(&self.render_assets)
@@ -98,7 +109,6 @@ pub enum RendererError {
     Atlas(String),
 }
 
-/// The loading splash: logo, progress bar and status line.
 pub(crate) fn splash_elements(sw: f32, sh: f32, progress: f32, status: &str) -> Vec<MenuElement> {
     let gs = (sh / 400.0).max(1.0);
     let logo_size = 48.0 * gs;
@@ -149,15 +159,11 @@ pub(crate) fn splash_elements(sw: f32, sh: f32, progress: f32, status: &str) -> 
 pub struct PlayerPreview {
     pub rect: [f32; 4],
     pub gui_scale: f32,
-    /// Vanilla inventory entity-render size (30 normal inventory, 20 creative
-    /// inventory tab).
     pub model_scale: f32,
     pub cursor: (f32, f32),
     pub armor: [Option<ArmorRenderInfo>; 4],
 }
 
-/// The enchanting table's 3D book box: where to draw it and the
-/// partial-tick-interpolated animation inputs.
 #[derive(Clone, Copy)]
 pub struct BookPreview {
     pub rect: [f32; 4],
@@ -166,8 +172,6 @@ pub struct BookPreview {
     pub flip: f32,
 }
 
-/// A GUI preview box's `[x, y, w, h]` clamped to the swapchain, as the scissor
-/// rect its 3D content draws within; None when fully off screen.
 fn preview_box_rect(rect: [f32; 4], extent: rhi::Extent) -> Option<rhi::Rect> {
     let x = rect[0].max(0.0) as u32;
     let y = rect[1].max(0.0) as u32;
@@ -181,26 +185,20 @@ fn preview_box_rect(rect: [f32; 4], extent: rhi::Extent) -> Option<rhi::Rect> {
     })
 }
 
-// Constructed once per frame and consumed immediately, never stored.
 #[allow(clippy::large_enum_variant)]
 enum RenderMode<'a> {
     World {
         block_render: BlockRenderView<'a>,
         overlay: Vec<MenuElement>,
-        /// The main hand's then the offhand's, as for `held_items`.
         swing_progress: [f32; 2],
         use_anim: [Option<pipelines::held_item::UseAnim>; 2],
-        /// The main hand's then the offhand's item.
         held_items: [Option<pipelines::held_item::HeldItemInfo>; 2],
         main_hand_right: bool,
-        /// The local player's light, for the first-person arm (vanilla
-        /// `renderHandsWithItems`).
         hand_light: LightLevels,
         shown_hands: HandRenderSelection,
         player_team_color: Option<u32>,
         render_first_person_hand: bool,
         destroy_info: Option<(BlockPos, u32, BlockState)>,
-        /// The targeted block's outline shape and where it sits.
         block_outline: Option<(glam::DVec3, &'static [LocalBox])>,
         show_chunk_borders: bool,
         sky: SkyState,
@@ -225,8 +223,6 @@ enum RenderMode<'a> {
     },
 }
 
-/// Where a menu screen draws the player's rotating skin: its anchor as screen
-/// fractions and a size factor.
 #[derive(Clone, Copy)]
 pub struct MenuSkin {
     pub at: (f32, f32),
@@ -261,7 +257,6 @@ pub struct Renderer {
     sky_pipeline: SkyPipeline,
     panorama_pipeline: PanoramaPipeline,
     menu_pipeline: MenuOverlayPipeline,
-    /// The Menu Background Blur option: vanilla's `MenuBlurRadius`.
     menu_blur_radius: u8,
     entity_outline: EntityOutline,
     post_effects: PostEffects,
@@ -275,8 +270,6 @@ pub struct Renderer {
     cloud_pipeline: CloudPipeline,
     gui_item_pipeline: pipelines::gui_item::GuiItemPipeline,
     gui_item_atlas: pipelines::gui_item_atlas::GuiItemAtlas,
-    /// Force Unicode Font also evens the Auto GUI scale the item atlas is sized
-    /// for.
     font_options: FontOptions,
 
     atlas: TextureAtlas,
@@ -284,22 +277,16 @@ pub struct Renderer {
     entity_shadow_pipeline: EntityShadowPipeline,
     moving_block_buffers: MovingBlockBuffers,
     block_entity_pipeline: BlockEntityPipeline,
-    /// The selected shader pack, and its render path once built.
     shader_pack: Option<(
         crate::shaderpack::ShaderPack,
         Option<pipelines::shaderpack::PackRenderer>,
     )>,
-    /// The pack last asked for, loaded or not, so a broken one isn't retried
-    /// every frame.
     shader_pack_selected: Option<std::path::PathBuf>,
-    /// What the selected pack reads about the player's surroundings.
     pack_world: pipelines::shaderpack::PackWorld,
     chunk_buffers: ChunkBufferStore,
     frames: rhi::backend::Frames,
     screenshot: screenshot::ScreenshotCapture,
     swapchain_dirty: bool,
-    /// The native window is gone (Android backgrounded the app), and with it
-    /// the surface and swapchain; nothing renders until `resume`.
     suspended: bool,
     vsync: bool,
     width: u32,
@@ -308,9 +295,6 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// A renderer drawing into `window`, whose GPU context is opened here.
-    /// The browser can only ask for a GPU asynchronously: there the context
-    /// comes from [`Self::with_context`].
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         window: Arc<Window>,
@@ -334,7 +318,6 @@ impl Renderer {
         )
     }
 
-    /// A renderer drawing through `ctx`, which draws into `window`.
     #[allow(clippy::too_many_arguments)]
     pub fn with_context(
         ctx: rhi::backend::Context,
@@ -352,7 +335,11 @@ impl Renderer {
             packs,
             options: font_options,
         } = font_sources;
-        let render_assets_handle = {
+        let preloaded = PRELOADED_RENDER_ASSETS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let render_assets_handle = preloaded.is_none().then(|| {
             let jar_assets_dir = jar_assets_dir.to_path_buf();
             let asset_index = asset_index.clone();
             let cache_dir = cache_dir.to_path_buf();
@@ -360,12 +347,10 @@ impl Renderer {
                 BlockRenderAssets::load(&jar_assets_dir, &asset_index, Some(&cache_dir), None)
             })
             .expect("spawn the render assets thread")
-        };
+        });
 
         let (ctx, swapchain_state, mut frames, mut menu_pipeline) =
             boot::bring_up(ctx, &window, font_sources, Some(bedrock_ui_dir), vsync)?;
-        // The swapchain may pick the surface's `current_extent` rather than the
-        // requested size; track that actual extent so layout matches rendering.
         let swapchain_extent = swapchain_state.extent;
 
         let sw = swapchain_extent.width as f32;
@@ -387,11 +372,11 @@ impl Renderer {
         splash(&mut menu_pipeline, 0.0, "Loading block models...");
 
         let camera = Camera::new(swapchain_state.extent.aspect_ratio());
-        let render_assets = Arc::new(
-            render_assets_handle
-                .join()
-                .expect("block render assets thread panicked"),
-        );
+        let render_assets = Arc::new(match (preloaded, render_assets_handle) {
+            (Some(assets), _) => assets,
+            (None, Some(handle)) => handle.join().expect("block render assets thread panicked"),
+            (None, None) => unreachable!("render assets are either preloaded or loading"),
+        });
 
         splash(&mut menu_pipeline, 0.2, "Building texture atlas...");
 
@@ -465,7 +450,6 @@ impl Renderer {
 
         splash(&mut menu_pipeline, 0.9, "Finalizing...");
 
-        // Wide arms until the profile's skin (and its model flag) is fetched.
         let skin_preview = SkinPreviewPipeline::new(
             &ctx.device,
             swapchain_state.targets(),
@@ -657,9 +641,6 @@ impl Renderer {
             .set_aspect_ratio(new_size.width as f32 / new_size.height as f32);
     }
 
-    /// Stops rendering while the app is in the background, dropping the
-    /// surface and swapchain unless they outlive it, but keeping the device
-    /// and every other resource.
     pub fn suspend(&mut self) {
         self.ctx.device.wait_idle();
         if !KEEPS_SURFACE_WHEN_SUSPENDED {
@@ -669,8 +650,6 @@ impl Renderer {
         self.suspended = true;
     }
 
-    /// Picks up rendering again, rebuilding the surface and swapchain if
-    /// `suspend` dropped them.
     pub fn resume(&mut self, window: &Window) -> Result<(), RendererError> {
         if !self.suspended {
             return Ok(());
@@ -691,10 +670,7 @@ impl Renderer {
         }
     }
 
-    /// Under FIFO, blocks until at most one frame is queued for display so the
-    /// next frame's input isn't sampled ahead of a full queue.
     pub fn pace_frame(&mut self) {
-        // Bounded so a minimized/occluded window can't stall the loop.
         const PACE_TIMEOUT_NS: u64 = 100_000_000;
 
         self.last_timings.pace_ms = 0.0;
@@ -708,17 +684,10 @@ impl Renderer {
         self.last_timings.pace_ms = t_pace.elapsed().as_secs_f32() * 1000.0;
     }
 
-    /// Reopens the frame's pass after an offscreen detour, keeping what it
-    /// drew.
     pub fn set_menu_blur_radius(&mut self, radius: u8) {
         self.menu_blur_radius = radius;
     }
 
-    /// Vanilla `GuiRenderer.draw`: draws `elements` up to the first blur
-    /// marker, then blurs the frame there (`processBlurEffect`). The blur is
-    /// written back over the frame for `BlurBackground`, and only kept as the
-    /// frosted panels' texture for `BlurBackdrop`. Returns the reopened pass,
-    /// the next vertex base and the elements still to draw.
     fn draw_until_blur<'e>(
         &mut self,
         encoder: &rhi::backend::CommandEncoder,
@@ -746,7 +715,6 @@ impl Renderer {
             0,
         );
         let in_place = matches!(elements[split], MenuElement::BlurBackground);
-        // Vanilla `extractBlurredBackground` skips a radius under 1.
         if !in_place || self.menu_blur_radius > 0 {
             pass.end();
             self.post_effects.blur(
@@ -774,8 +742,6 @@ impl Renderer {
         )
     }
 
-    /// Selects the shader pack at `path`, or turns packs off with `None`. The
-    /// pack's programs compile on the next world frame.
     pub fn set_shader_pack(&mut self, path: Option<&std::path::Path>) -> Result<(), String> {
         if self.shader_pack_selected.as_deref() == path {
             return Ok(());
@@ -793,14 +759,10 @@ impl Renderer {
         Ok(())
     }
 
-    /// Sets what the shader pack reads about the player's surroundings.
     pub fn set_pack_world(&mut self, world: pipelines::shaderpack::PackWorld) {
         self.pack_world = world;
     }
 
-    /// Draws a world frame's geometry and full-screen passes through the
-    /// selected shader pack, before the swapchain pass draws its `final`;
-    /// `false` when no pack draws this frame.
     fn render_pack_world(
         &mut self,
         encoder: &rhi::backend::CommandEncoder,
@@ -946,8 +908,6 @@ impl Renderer {
                 }
             };
         let particles = &self.particle_pipeline;
-        // Iris draws opaque particles before deferred and translucent ones
-        // after water, where vanilla submits each layer.
         let draw_particles = |pack: &mut PackRenderer, translucent: bool| {
             let geometry = if translucent {
                 PackGeometry::ParticlesTranslucent
@@ -972,9 +932,6 @@ impl Renderer {
             }
         };
 
-        // Iris's shadow pass: terrain, entities and block entities from the
-        // sun or moon, `shadowtex1` copied before its translucents.
-        // TODO: `shadowDistanceRenderMul` and `entityShadowDistanceMul`.
         if let Some(planes) = shadow_planes {
             terrain(&mut pack, PackGeometry::ShadowTerrain, View::Shadow);
             let casters = Some(pack.shadow_casters);
@@ -983,9 +940,6 @@ impl Renderer {
             pack.copy_opaque_depth(encoder, true);
             water(&mut pack, PackGeometry::ShadowWater, &planes);
         }
-        // Drawn underwater too, as Iris does; the pack fogs it.
-        // TODO: skipped in lava and powder snow, or under an effect that
-        // blocks the sky (`LevelRenderer.addSkyPass`).
         let draws: Vec<_> = self
             .sky_pipeline
             .horizon(sky, *render_distance)
@@ -1002,8 +956,6 @@ impl Renderer {
         terrain(&mut pack, PackGeometry::Terrain, View::Camera);
         draw_entities(&mut pack, PackGeometry::Entities, &frustum, None);
         draw_block_entities(&mut pack, PackGeometry::BlockEntities);
-        // TODO: `separateEntityDraws`, which draws these after translucent
-        // terrain instead.
         for layer in PackLayer::ALL {
             if !entity_renderer.has_pack_layer(layer) {
                 continue;
@@ -1023,9 +975,6 @@ impl Renderer {
         water(&mut pack, PackGeometry::Water, &frustum);
         draw_particles(&mut pack, true);
         pack.run_full_screen(device, encoder, frame, false);
-        // TODO: weather, clouds, dropped items, the block-break
-        // overlay and entity shadows through their `gbuffers_*` programs; the
-        // block outline and chunk borders over the pack's depth.
         if let Some((_, slot)) = &mut self.shader_pack {
             *slot = Some(pack);
         }
@@ -1044,15 +993,11 @@ impl Renderer {
             self.vsync,
         )?;
 
-        // Adopt the swapchain's actual extent (may differ from the requested
-        // window size, e.g. macOS fullscreen) so the viewport, menu layout, blur,
-        // and camera aspect all agree — otherwise the image stretches/letterboxes.
         self.width = self.swapchain.extent.width;
         self.height = self.swapchain.extent.height;
         self.camera
             .set_aspect_ratio(self.width as f32 / self.height as f32);
 
-        // Pipelines name only their targets' formats, which a resize keeps.
         let targets = self.swapchain.targets();
         if targets != old_targets {
             self.chunk_pipeline.destroy(&self.ctx.device);
@@ -1108,7 +1053,6 @@ impl Renderer {
             if targets == old_targets {
                 pack.resize(&self.ctx.device, self.swapchain.extent);
             } else {
-                // The final pass draws into the swapchain's format.
                 pack.destroy(&self.ctx.device);
                 *slot = None;
             }
@@ -1164,8 +1108,6 @@ impl Renderer {
         self.atlas.hold_animations();
     }
 
-    /// Redraws the lightmap with `info` on the next frame, as vanilla does
-    /// once per tick.
     pub fn tick_lightmap(&mut self, info: LightmapInfo) {
         self.lightmap.tick(info);
     }
@@ -1174,7 +1116,6 @@ impl Renderer {
         self.camera.set_entity_look(look_dir);
     }
 
-    /// The spectator view effect the world frame runs, if any.
     pub fn set_post_effect(&mut self, effect: Option<PostEffect>) {
         self.post_effects.set(&self.ctx.device, effect);
     }
@@ -1210,9 +1151,6 @@ impl Renderer {
         if self.camera.mode == camera::CameraMode::FirstPerson || self.camera.top_down().is_some() {
             return;
         }
-        // TODO: vanilla `Camera.getMaxZoom` clips 8 rays offset by 0.1 against
-        // visual shapes with no minimum; this marches 0.2 steps against full
-        // cubes with a 0.4 pad and a 0.5 floor, so a distance of 0 sits 0.5 back.
         let max = max_distance as f64;
         let fwd = self.camera.render_look_dir().as_vec().as_dvec3();
         let dir = if self.camera.mode == camera::CameraMode::ThirdPersonFront {
@@ -1282,12 +1220,10 @@ impl Renderer {
         self.camera.look_dir
     }
 
-    /// Rotation-only view-projection for the locator bar's waypoint pitch test.
     pub fn locator_projection(&self) -> glam::Mat4 {
         self.camera.view_rotation_projection()
     }
 
-    /// Effective camera (yaw, pitch) in degrees, mirrored-view adjusted.
     pub fn camera_effective_look_deg(&self) -> (f32, f32) {
         self.camera.effective_look_deg()
     }
@@ -1300,13 +1236,10 @@ impl Renderer {
         self.camera.position
     }
 
-    /// Camera position used for rendering (eye plus any third-person offset).
     pub fn camera_render_position(&self) -> glam::DVec3 {
         *self.camera.position + self.camera.third_person_offset().as_dvec3()
     }
 
-    /// The render anchor (camera block position); world-space data uploaded
-    /// to the GPU is rebased against this in f64 first (see `Camera::anchor`).
     pub fn camera_anchor(&self) -> glam::DVec3 {
         self.camera.anchor()
     }
@@ -1326,14 +1259,10 @@ impl Renderer {
         ))
     }
 
-    /// Six normalized frustum planes (camera-relative, same convention as the
-    /// GPU cull), for CPU-side visibility classification of
-    /// mesh-scheduling.
     pub fn frustum_planes(&self) -> [[f32; 4]; 6] {
         self.camera.frustum_planes()
     }
 
-    /// Frustum planes widened by `extra_radians` of FOV, for the tier-1 margin.
     pub fn frustum_planes_dilated(&self, extra_radians: f32) -> [[f32; 4]; 6] {
         self.camera.frustum_planes_dilated(extra_radians)
     }
@@ -1354,7 +1283,6 @@ impl Renderer {
         &self.ctx.api_version
     }
 
-    /// What the F3 screen says about the graphics API, the GPU and its driver.
     pub fn renderer_info(&self) -> debugger::RendererInfo {
         #[cfg(feature = "wgpu")]
         let driver = {
@@ -1376,43 +1304,32 @@ impl Renderer {
         self.chunk_buffers.chunk_count()
     }
 
-    /// See [`ChunkBufferStore::slice_overlap`].
     #[cfg(feature = "test-harness")]
     pub fn chunk_slice_overlap(&self) -> Option<String> {
         self.chunk_buffers.slice_overlap()
     }
 
-    /// Sections actually drawn after frustum culling (lags a few frames). The
-    /// graph's occluded sections are omitted before the cull, so this also
-    /// drops when occlusion hides geometry — useful for the F3 overlay.
     pub fn sections_drawn(&self) -> u32 {
         self.chunk_buffers.sections_drawn()
     }
 
-    /// Push the CPU visibility graph's per-column visible-section masks to the
-    /// chunk buffer store, which omits occluded sections from the GPU cull.
     pub fn set_chunk_visibility(&mut self, vis: HashMap<ChunkPos, u32>) {
         self.chunk_buffers.set_chunk_visibility(vis);
     }
 
-    /// Arm a vanilla F2 screenshot; captured on the next presented frame.
     pub fn request_screenshot(&mut self) {
         self.screenshot.arm();
     }
 
-    /// [`Renderer::request_screenshot`], saved to `path`.
     #[cfg(feature = "test-harness")]
     pub fn request_screenshot_to(&mut self, path: std::path::PathBuf) {
         self.screenshot.arm_to(path);
     }
 
-    /// Drain finished screenshots: `Ok(relative filename)` or `Err(message)`.
-    /// The caller turns each into a chat line.
     pub fn take_screenshot_messages(&mut self) -> Vec<Result<String, String>> {
         self.screenshot.drain_results()
     }
 
-    /// A screenshot capture or encode is still in flight.
     pub fn screenshot_saving(&self) -> bool {
         self.screenshot.saving()
     }
@@ -1421,9 +1338,6 @@ impl Renderer {
         self.frames.wait_all(&self.ctx.device);
     }
 
-    /// Upload a batch of chunk meshes in a single coalesced transfer. Returns,
-    /// per mesh that hit pool exhaustion, the section indices dropped (need
-    /// re-mesh); empty on success.
     pub fn upload_chunk_meshes(&mut self, meshes: &[ChunkMeshData]) -> Vec<(ChunkPos, Vec<i32>)> {
         self.chunk_buffers.upload_batch(&self.ctx.device, meshes)
     }
@@ -1437,8 +1351,6 @@ impl Renderer {
         self.chunk_buffers.clear();
     }
 
-    /// The block ids to mesh terrain for: the shader pack's while one can
-    /// draw the world, else none for vanilla.
     pub fn pack_block_ids(&self) -> Option<Arc<crate::shaderpack::block_ids::BlockIds>> {
         self.shader_pack
             .as_ref()
@@ -1446,7 +1358,6 @@ impl Renderer {
             .map(|(pack, _)| Arc::clone(&pack.block_ids))
     }
 
-    /// Drops every chunk mesh and draws them in `format` from now on.
     pub fn set_terrain_format(&mut self, format: TerrainFormat) {
         self.wait_for_all_frames();
         self.chunk_buffers.set_format(&self.ctx.device, format);
@@ -1497,7 +1408,6 @@ impl Renderer {
         book_preview: Option<BookPreview>,
         eyes_in_water: bool,
     ) -> Result<(), RendererError> {
-        // Refresh the far plane before this frame's view/projection and fog.
         self.camera.set_render_distance(render_distance);
         let held_items = held_items.map(|held| {
             held.map(|(name, stack)| {
@@ -1516,8 +1426,6 @@ impl Renderer {
             })
         });
         sky.fog_color = fog::fog_color(&sky, self.camera.forward(), render_distance);
-        // Vanilla clears to the fog colour, which shows below the sky disc's
-        // rim; underwater, the water fog colour.
         let [r, g, b] = if eyes_in_water {
             camera::WATER_FOG_COLOR
         } else {
@@ -1617,7 +1525,6 @@ impl Renderer {
             .rebind_atlas(&self.ctx.device, &self.atlas);
         self.particle_pipeline
             .rebind_atlas(&self.ctx.device, &self.atlas);
-        // The pack binds the old atlas; it rebuilds on the next frame.
         if let Some((_, pack)) = &mut self.shader_pack
             && let Some(mut pack) = pack.take()
         {
@@ -1639,14 +1546,11 @@ impl Renderer {
             &self.render_assets,
         );
 
-        // GUI item slots cache fully rendered pixels. Releasing their keys is
-        // enough: reused slots are marked stale and cleared before rebaking.
         self.gui_item_atlas.invalidate_all();
 
         tracing::info!("Assets reloaded");
     }
 
-    /// Vanilla `FontManager.updateOptions`: only the font sets change.
     pub fn reload_fonts(
         &mut self,
         packs: &crate::resource_pack::ResourcePackManager,
@@ -1677,8 +1581,6 @@ impl Renderer {
             .reload_cubemap(&self.ctx.device, faces);
     }
 
-    /// Brings the Bedrock title and button sprites into the menu atlas when
-    /// their files arrived after the atlas was built.
     pub fn load_bedrock_sprites(&mut self, bedrock_ui_dir: &Path) {
         if self.menu_pipeline.has_sprite(SpriteId::BedrockTitle) {
             return;
@@ -1701,8 +1603,6 @@ impl Renderer {
         let skin = rt.block_on(async { fetch_skin_texture(&uuid_str).await });
         match skin {
             Ok(skin) => {
-                // In-flight frames may still reference the old skin texture,
-                // hand mesh, and preview pipeline about to be destroyed.
                 self.ctx.device.wait_idle();
                 self.hand_pipeline.reload_skin(&self.ctx.device, &skin);
                 self.skin_preview.destroy(&self.ctx.device);
@@ -1738,21 +1638,16 @@ impl Renderer {
             .update_favicon_atlas(&self.ctx.device, favicons);
     }
 
-    /// Player faces reuse the string-keyed favicon atlas, which holds only
-    /// the last upload; the menu sends faces and favicons together
-    /// (`MainMenu::menu_atlas_images`).
     pub fn update_face_atlas(&mut self, faces: &[(String, Vec<u8>, u32)]) {
         self.update_favicon_atlas(faces);
     }
 
-    /// The inline objects the menu text drew since the last call.
     pub fn drain_drawn_inline_objects(
         &mut self,
     ) -> std::collections::hash_map::Drain<'_, String, crate::ui::text::InlineObject> {
         self.menu_pipeline.geometry.drain_drawn_inline_objects()
     }
 
-    /// Points an animated inline object at the frame showing now.
     pub fn set_inline_object_frame(&mut self, key: &str, frame_key: &str) {
         self.menu_pipeline
             .geometry
@@ -1763,7 +1658,6 @@ impl Renderer {
         self.menu_pipeline.geometry.text_width(text, scale)
     }
 
-    /// Menu text width in the SGA (`minecraft:alt`) glyphs.
     pub fn menu_text_width_sga(&self, text: &str, scale: f32) -> f32 {
         self.menu_pipeline.geometry.mc_text_width_sga(text, scale)
     }
@@ -1772,7 +1666,6 @@ impl Renderer {
         self.menu_pipeline.geometry.spans_width(spans, scale)
     }
 
-    /// Local item-mesh classification and bounds used by dropped-item layout.
     pub fn item_mesh_info(&self, name: &str) -> Option<pipelines::item_entity::ItemMeshInfo> {
         self.item_entity_pipeline.mesh_info(name)
     }
@@ -1798,8 +1691,6 @@ impl Renderer {
             );
             false
         };
-        // Read back the real bounds; fall back to full-cube / flat defaults if the
-        // mesh baked empty (missing asset) — nothing renders for it anyway.
         self.item_entity_pipeline
             .mesh_info(name)
             .unwrap_or(pipelines::item_entity::ItemMeshInfo {
@@ -1837,8 +1728,6 @@ impl Renderer {
         self.frames.wait(&self.ctx.device)?;
         let fence_ms = t_fence.elapsed().as_secs_f32() * 1000.0;
 
-        // Fence signalled: reclaim chunk slices the GPU is now provably done with,
-        // and read back any screenshot copy recorded for this frame index.
         self.chunk_buffers.begin_frame();
         self.screenshot.collect_ready(frame, &self.ctx.device);
 
@@ -1887,8 +1776,6 @@ impl Renderer {
 
         if matches!(&mode, RenderMode::World { .. }) {
             let frustum = self.camera.frustum_planes();
-            // The eye (including the third-person offset) is the origin the chunk
-            // vertex shader renders relative to, so the cull must use it too.
             self.chunk_buffers.dispatch_cull(
                 &encoder,
                 frame,
@@ -1938,8 +1825,6 @@ impl Renderer {
                     );
                     add_item(item_name, item_tints);
                 }
-                // Vanilla `ClientBundleTooltip` draws its contents with the
-                // player as owner.
                 MenuElement::BundleTooltip {
                     items, item_tints, ..
                 } => {
@@ -1970,9 +1855,6 @@ impl Renderer {
             self.font_options.uniform,
         );
         if target_slot_px != self.gui_item_atlas.slot_px() {
-            // Mid-cmd-recording wait_idle: this cmd buffer is unsubmitted so
-            // holds no in-flight references, and `Device::submit` inside the
-            // rebuild uses a separate primary cmd from the same pool.
             self.ctx.device.wait_idle();
             self.gui_item_atlas.destroy(&self.ctx.device);
             self.gui_item_atlas =
@@ -2097,16 +1979,11 @@ impl Renderer {
                 eyes_in_water,
             } => {
                 let cull_ms = if pack_drawn {
-                    // TODO: the block outline, which packs draw through
-                    // `gbuffers_line`.
                     if let Some((_, Some(pack))) = &mut self.shader_pack {
                         pack.draw_final(&self.ctx.device, &mut pass, frame);
                     }
                     0.0
                 } else {
-                    // Vanilla water fog hides the sky dome and clouds; the framebuffer
-                    // is cleared to the water fog color, so skipping them tints the view
-                    // when looking up out of geometry.
                     if !*eyes_in_water {
                         self.sky_pipeline.update_and_draw(
                             &mut pass,
@@ -2118,13 +1995,8 @@ impl Renderer {
                     }
 
                     let t_cull = crate::clock::Instant::now();
-                    // A pack that failed to build leaves its vertex format until
-                    // the next frame remeshes; skip those.
                     let vanilla_terrain = self.chunk_buffers.format() == TerrainFormat::Vanilla;
                     if vanilla_terrain {
-                        // Solid (no discard) first so it lays down depth and early-Z
-                        // lets the front-to-back order reject occluded fragments;
-                        // cutout after.
                         self.moving_block_buffers
                             .upload(&self.ctx.device, frame, moving_blocks);
                         self.chunk_pipeline.bind(&mut pass, frame, false);
@@ -2179,15 +2051,8 @@ impl Renderer {
                         item_entities,
                     );
 
-                    // Break particles draw after entities but before translucent
-                    // water: they write depth, and pomme's water doesn't, so this
-                    // lets water blend over particles behind it (vanilla draws
-                    // particles after all translucents into a depth-sharing
-                    // target).
                     self.particle_pipeline.draw(&mut pass, frame);
 
-                    // After entities, block entities and particles, as
-                    // `LevelRenderer.submitFeatures` submits it.
                     if let Some((origin, boxes)) = block_outline {
                         let origin = (*origin - anchor).as_vec3();
                         let screen = [self.screen_width() as f32, self.screen_height() as f32];
@@ -2195,18 +2060,12 @@ impl Renderer {
                             .draw(&mut pass, frame, boxes, origin, screen);
                     }
 
-                    // Translucent water draws after opaque terrain and entities so it
-                    // blends over them; depth-tested (occluded by geometry in front)
-                    // but doesn't write depth. CPU frustum-culled, reusing the entity
-                    // frustum/eye.
                     if vanilla_terrain {
                         self.chunk_pipeline.bind_water(&mut pass, frame);
                         self.chunk_buffers
                             .draw_water(&pass, &ent_frustum, anchor, eye);
                     }
 
-                    // Clouds draw after opaque world geometry (so terrain occludes
-                    // them) and before weather, depth-tested against the scene.
                     if !*eyes_in_water {
                         self.cloud_pipeline.update_and_draw(
                             &mut pass,
@@ -2217,8 +2076,6 @@ impl Renderer {
                         );
                     }
 
-                    // Weather draws after opaque world geometry (depth-tested against
-                    // terrain) but before the depth clear for the hand pass.
                     self.weather_pipeline.update_and_draw(
                         &mut pass,
                         frame,
@@ -2241,17 +2098,8 @@ impl Renderer {
                 {
                     let aspect = sw / sh.max(1.0);
                     let hud_fov = self.camera.hud_fov_radians();
-                    // Vanilla applies bobHurt (death + hurt) and bobView to the
-                    // first-person arm/item pose stack as well as the world.
                     let view_effect = self.camera.view_effect_matrix();
                     let hand_pose = self.camera.hand_pose();
-                    // Vanilla submitArmWithItem draws the bare arm only for an
-                    // empty main hand; held items render alone, and an empty
-                    // offhand draws nothing. The main arm is the options' one,
-                    // which the server echoes back as `getMainArm`.
-                    // TODO: map (`renderOneHandedMap`/`renderTwoHandedMap`)
-                    // and the crossbow loading pose, once crossbow use is
-                    // tracked.
                     if shown_hands.main && held_items[0].is_none() {
                         self.hand_pipeline.update_and_draw(
                             &mut pass,
@@ -2296,7 +2144,6 @@ impl Renderer {
                     }
                 }
 
-                // Vanilla blits the outline after the hand, before the GUI.
                 if self.entity_renderer.has_outlines() || self.item_entity_pipeline.has_outlines() {
                     pass.end();
                     let mut outline = self.entity_outline.begin(&self.ctx.device, &encoder);
@@ -2308,7 +2155,6 @@ impl Renderer {
                     self.entity_outline.composite(&mut pass);
                 }
 
-                // Vanilla `applyPostEffects`, straight after the outline.
                 if self.post_effects.effect().is_some() {
                     pass.end();
                     self.post_effects.apply(
@@ -2340,8 +2186,6 @@ impl Renderer {
                     vbase,
                 );
 
-                // Each preview box gets its depth cleared and its own scissor
-                // while the 3D content draws.
                 if let Some(p) = player_preview
                     && let Some(rect) = preview_box_rect(p.rect, self.swapchain.extent)
                 {
@@ -2413,7 +2257,6 @@ impl Renderer {
         pass.end();
         self.swapchain.ready_to_present(&encoder, image_index);
 
-        // The image is ready to present; grab it first if F2 was pressed.
         self.screenshot.record_if_armed(
             &self.ctx.device,
             &encoder,
@@ -2474,8 +2317,6 @@ fn warm_item_meshes(
     }
 }
 
-/// Decoded skin ready for upload: always a 64x64 RGBA sheet (legacy 64x32
-/// skins are converted), plus the profile's arm model.
 pub(crate) struct SkinData {
     pub pixels: Vec<u8>,
     pub width: u32,
@@ -2490,8 +2331,6 @@ pub(crate) async fn fetch_skin_texture_by_name(name: &str) -> Result<SkinData, S
         id: String,
     }
 
-    // The name goes in a path segment, so it is checked and encoded rather
-    // than pasted into the URL.
     if !crate::player::valid_player_name(name) {
         return Err(format!("invalid player name {name:?}"));
     }
@@ -2552,7 +2391,6 @@ pub(crate) async fn fetch_skin_texture(uuid: &str) -> Result<SkinData, String> {
         .properties
         .iter()
         .find(|p| p.name.as_deref() == Some("textures"))
-        // TODO: authlib reads only the `textures` property; drop this fallback.
         .or_else(|| profile.properties.first())
         .ok_or("No properties")?
         .value;
@@ -2591,8 +2429,6 @@ fn skin_url_from_texture_property(value: &str) -> Result<(String, bool), String>
         model: Option<String>,
     }
 
-    /// Gson's map adapter fails on a repeated key. Keys are authlib's texture
-    /// `Type`, so unknown names all collide as `null`.
     impl<'de> serde::Deserialize<'de> for Textures {
         fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
             struct Visitor;
@@ -2632,10 +2468,6 @@ fn skin_url_from_texture_property(value: &str) -> Result<(String, bool), String>
     let payload: TexturesPayload =
         serde_json::from_slice(&decoded).map_err(pomme_auth::error_chain)?;
 
-    // authlib `unpackTextures`: one bad url empties the whole payload.
-    // TODO: vanilla also shows the default skin for other players whose
-    // textures property isn't SIGNED (`PlayerInfo.createSkinLookup`); pomme
-    // doesn't verify the signature yet.
     let mut skin = None;
     for (key, texture) in payload.textures.0 {
         match texture.url {
@@ -2651,9 +2483,6 @@ fn skin_url_from_texture_property(value: &str) -> Result<(String, bool), String>
     skin.ok_or_else(|| "No skin texture".to_string())
 }
 
-/// authlib's `TextureUrlChecker.isAllowedTextureDomain`: a `java.net.URI`
-/// (`parse_untrusted_url`'s rules) with a case-sensitive http(s) scheme and a
-/// host of exactly `textures.minecraft.net`.
 #[cfg(feature = "game")]
 fn is_allowed_texture_url(url: &str) -> bool {
     const HOST: &str = "textures.minecraft.net";
@@ -2666,8 +2495,6 @@ fn is_allowed_texture_url(url: &str) -> bool {
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let (host, port) = host_port.split_once(':').unwrap_or((host_port, ""));
-    // `URI` scans the port as digits, then `Integer.parseInt`; an overflow
-    // leaves no host.
     let port_ok = port.is_empty()
         || (port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<i32>().is_ok());
     matches!(scheme, "http" | "https") && host == HOST && port_ok
@@ -2697,9 +2524,6 @@ fn skin_px(x: u32, y: u32) -> usize {
     ((y * SKIN_W + x) * 4) as usize
 }
 
-/// `SkinTextureDownloader.processLegacySkin`: rejects bad sizes, upgrades
-/// legacy 64x32 sheets to 64x64 by mirroring the right limbs into the modern
-/// left-limb slots, and applies the alpha fixups.
 fn process_legacy_skin(
     pixels: Vec<u8>,
     width: u32,
@@ -2720,7 +2544,6 @@ fn process_legacy_skin(
     };
 
     if legacy {
-        // (x, y, dx, dy, w, h): mirror the right leg/arm into the left slots.
         const COPIES: [(u32, u32, i32, i32, u32, u32); 12] = [
             (4, 16, 16, 32, 4, 4),
             (8, 16, 16, 32, 4, 4),
@@ -2748,8 +2571,6 @@ fn process_legacy_skin(
     Ok((img, SKIN_W, SKIN_W))
 }
 
-/// `NativeImage.copyRect(x, y, dx, dy, w, h, true, false)`: copies the rect at
-/// (x, y) to (x + dx, y + dy) with each row written right-to-left.
 fn copy_rect_mirrored(img: &mut [u8], x: u32, y: u32, dx: i32, dy: i32, w: u32, h: u32) {
     for row in 0..h {
         for col in 0..w {
@@ -2762,7 +2583,6 @@ fn copy_rect_mirrored(img: &mut [u8], x: u32, y: u32, dx: i32, dy: i32, w: u32, 
     }
 }
 
-/// Forces the rect fully opaque (base layer regions never carry transparency).
 fn set_no_alpha(img: &mut [u8], x0: u32, y0: u32, x1: u32, y1: u32) {
     for y in y0..y1 {
         for x in x0..x1 {
@@ -2771,8 +2591,6 @@ fn set_no_alpha(img: &mut [u8], x0: u32, y0: u32, x1: u32, y1: u32) {
     }
 }
 
-/// The "Notch transparency hack": a fully opaque hat region predates hat
-/// transparency, so strip its alpha entirely instead of drawing a solid box.
 fn strip_alpha_if_opaque(img: &mut [u8], x0: u32, y0: u32, x1: u32, y1: u32) {
     let all_opaque = (y0..y1).all(|y| (x0..x1).all(|x| img[skin_px(x, y) + 3] >= 128));
     if all_opaque {
@@ -2826,8 +2644,6 @@ impl Drop for Renderer {
     }
 }
 
-/// Entities aren't sent beyond the server's tracking range; a generous
-/// render-distance cap just trims anything stray.
 fn entity_cull_distance(render_distance: u32) -> f32 {
     (render_distance * 16) as f32 + 16.0
 }
@@ -2935,24 +2751,18 @@ mod tests {
         set_px(&mut img, 20, 50, [1, 2, 3, 200]);
         let (out, w, h) = process_legacy_skin(img, 64, 64).unwrap();
         assert_eq!((w, h), (64, 64));
-        // Base region alpha is forced opaque, rgb untouched.
         assert_eq!(get_px(&out, 20, 50), [1, 2, 3, 255]);
     }
 
     #[test]
     fn converts_legacy_skins_to_64x64() {
         let mut img = vec![0u8; 64 * 32 * 4];
-        // Right leg front, top-left pixel: (4, 20).
         set_px(&mut img, 4, 20, [10, 20, 30, 255]);
-        // Right arm front, top-left pixel: (44, 20).
         set_px(&mut img, 44, 20, [40, 50, 60, 255]);
         let (out, w, h) = process_legacy_skin(img, 64, 32).unwrap();
         assert_eq!((w, h), (64, 64));
 
-        // copyRect(4, 20, 16, 32, 4, 12, mirrored): left leg front spans
-        // x 20..24, and mirroring puts the source's left edge on the right.
         assert_eq!(get_px(&out, 23, 52), [10, 20, 30, 255]);
-        // copyRect(44, 20, -8, 32, 4, 12, mirrored): left arm front x 36..40.
         assert_eq!(get_px(&out, 39, 52), [40, 50, 60, 255]);
     }
 
@@ -2965,7 +2775,6 @@ mod tests {
             }
         }
         let (out, _, _) = process_legacy_skin(img, 64, 32).unwrap();
-        // A fully opaque hat region predates hat transparency: alpha stripped.
         assert_eq!(get_px(&out, 40, 8)[3], 0);
     }
 }

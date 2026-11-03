@@ -10,7 +10,9 @@ use crate::renderer::chunk::mesher::{BiomeClimate, GrassColorModifier, int_to_rg
 
 /// The synced biome registry, in protocol-id order.
 pub(crate) fn biome_registry(holder: &RegistryHolder) -> Option<&RegistryType<NbtCompound>> {
-    holder.extra.get(&Identifier::new("minecraft:worldgen/biome"))
+    holder
+        .extra
+        .get(&Identifier::new("minecraft:worldgen/biome"))
 }
 
 /// How many biomes chunk sections can name.

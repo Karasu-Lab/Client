@@ -1,5 +1,3 @@
-//! A filesystem in memory, which is the whole filesystem on the web.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -7,14 +5,12 @@ use std::sync::Arc;
 
 use crate::DirEntry;
 
-/// Files by path, and the directories that hold them (or were made empty).
 #[derive(Default)]
 pub struct MemoryFs {
     files: BTreeMap<PathBuf, Arc<Vec<u8>>>,
     dirs: BTreeSet<PathBuf>,
 }
 
-/// `.` and `..` resolved, so one file has one key.
 fn normal(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -57,8 +53,9 @@ impl MemoryFs {
         self.dirs.contains(&path)
             || self
                 .files
-                .keys()
-                .any(|file| file.starts_with(&path) && *file != path)
+                .range(path.clone()..)
+                .take(2)
+                .any(|(file, _)| *file != path && file.starts_with(&path))
     }
 
     pub fn len(&self, path: &Path) -> Option<u64> {
@@ -132,7 +129,6 @@ impl MemoryFs {
         Ok(())
     }
 
-    /// Moves a file, or a directory with everything under it.
     pub fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()> {
         let (from, to) = (normal(from), normal(to));
         if !self.exists(&from) {
@@ -166,7 +162,6 @@ impl MemoryFs {
         Ok(())
     }
 
-    /// Every file, for persisting.
     pub fn files(&self) -> impl Iterator<Item = (&Path, &Arc<Vec<u8>>)> {
         self.files
             .iter()
@@ -174,12 +169,13 @@ impl MemoryFs {
     }
 }
 
-/// The one tree a wasm build shares.
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod global {
     use std::io;
     use std::path::Path;
-    use std::sync::{Mutex, MutexGuard, PoisonError};
+    use std::sync::{MutexGuard, PoisonError};
+
+    use wasm_sync::Mutex;
 
     use super::MemoryFs;
     use crate::DirEntry;

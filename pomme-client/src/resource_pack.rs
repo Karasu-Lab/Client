@@ -136,13 +136,16 @@ impl ResourcePackManager {
         asset_key: &str,
         builtin: impl FnOnce() -> Option<PathBuf>,
     ) -> Option<PathBuf> {
-        let found = self.active_packs.descending().find_map(|layer| match &layer.pack {
-            Layer::Builtin(builtin) => builtin.resolve(asset_key),
-            Layer::Pack(pack) => {
-                let path = pack.dir.join("assets").join(asset_key);
-                pomme_vfs::exists(&path).then_some(path)
-            }
-        });
+        let found = self
+            .active_packs
+            .descending()
+            .find_map(|layer| match &layer.pack {
+                Layer::Builtin(builtin) => builtin.resolve(asset_key),
+                Layer::Pack(pack) => {
+                    let path = pack.dir.join("assets").join(asset_key);
+                    pomme_vfs::exists(&path).then_some(path)
+                }
+            });
         found.or_else(|| (!self.has_builtin()).then(builtin).flatten())
     }
 
@@ -159,15 +162,17 @@ impl ResourcePackManager {
             .flatten()
             .into_iter()
             .collect();
-        paths.extend(self.active_packs.ascending().filter_map(|layer| {
-            match &layer.pack {
-                Layer::Builtin(builtin) => builtin.resolve(asset_key),
-                Layer::Pack(pack) => {
-                    let path = pack.dir.join("assets").join(asset_key);
-                    pomme_vfs::is_file(&path).then_some(path)
-                }
-            }
-        }));
+        paths.extend(
+            self.active_packs
+                .ascending()
+                .filter_map(|layer| match &layer.pack {
+                    Layer::Builtin(builtin) => builtin.resolve(asset_key),
+                    Layer::Pack(pack) => {
+                        let path = pack.dir.join("assets").join(asset_key);
+                        pomme_vfs::is_file(&path).then_some(path)
+                    }
+                }),
+        );
         paths
     }
 
@@ -194,10 +199,7 @@ impl ResourcePackManager {
         else {
             return false;
         };
-        let Some(to) = from
-            .checked_add_signed(by)
-            .filter(|&to| to < ids.len())
-        else {
+        let Some(to) = from.checked_add_signed(by).filter(|&to| to < ids.len()) else {
             return false;
         };
         let moved = ids.remove(from);
