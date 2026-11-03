@@ -25,6 +25,13 @@ themselves up to date.
 Before building, you must have [just](https://github.com/casey/just) installed.
 The Rust toolchain is pinned in `rust-toolchain.toml`; rustup picks it up.
 
+This workspace is not self-contained: `pomme-client` depends on the
+`wgpu`, `thread`, `ui`, `debugger`, `settings`, `resourcepack` and `utils`
+crates of [BlockWorldRenderer](https://github.com/Karasu-Lab/BlockWorldRenderer)
+by the relative path `../../../crates/<name>`, so every `pomme-client`
+build — the client as well as the web viewer — requires this repository to
+be checked out at `third_party/Client` of a BlockWorldRenderer checkout.
+
 ## Building the client
 
 Requires the [Vulkan SDK](https://vulkan.lunarg.com/) and Python (to stage
@@ -147,8 +154,9 @@ crate); the page must be cross-origin isolated (COOP/COEP). Inside the
 BlockWorldRenderer dev shell, set `RUSTFLAGS` with `env` after `nix develop -c`,
 since the shell sets its own.
 
-This workspace is not self-contained: `pomme-client/Cargo.toml` depends on the
-`wgpu`, `thread`, `ui`, `debugger` and `settings` crates of
+As noted above, this workspace is not self-contained: `pomme-client/Cargo.toml`
+depends on the `wgpu`, `thread`, `ui`, `debugger`, `settings`, `resourcepack`
+and `utils` crates of
 [BlockWorldRenderer](https://github.com/Karasu-Lab/BlockWorldRenderer) by the
 relative path `../../../crates/<name>`, so it builds only with this repository
 checked out at `third_party/Client` of that one. `wgpu` is `default-features =
