@@ -29,7 +29,7 @@ open = "5"
 base64 = "0.23"
 zip = { version = "9.0", default-features = false, features = ["deflate"] }
 tokio = "1"
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 # Shared by pomme-client and pomme-protocol; the versions must agree so
 # glam types unify across the crate boundary.
 glam = "0.34"
