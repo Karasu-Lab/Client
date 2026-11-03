@@ -57,8 +57,10 @@ pub async fn persist(namespace: &str, path: &Path) -> Result<(), String> {
 }
 
 fn put(cache: &Cache, path: &Path) -> Result<Promise, String> {
-    let mut bytes = crate::read(path).map_err(|e| e.to_string())?;
-    let response = Response::new_with_opt_u8_array(Some(&mut bytes)).map_err(js_error)?;
+    let bytes = crate::read(path).map_err(|e| e.to_string())?;
+    let body = Uint8Array::new_with_length(bytes.len() as u32);
+    body.copy_from(&bytes);
+    let response = Response::new_with_opt_buffer_source(Some(&body)).map_err(js_error)?;
     Ok(cache.put_with_str(&key(path), &response))
 }
 
