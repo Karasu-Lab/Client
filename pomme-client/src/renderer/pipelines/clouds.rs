@@ -6,36 +6,19 @@ use crate::renderer::pipelines::sky::SkyState;
 use crate::renderer::rhi::{self, VertexFormat};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, shader, util};
 
-/// Vertical thickness of the cloud layer in blocks.
 const CLOUD_THICKNESS: f32 = 4.0;
-/// Horizontal size of one cloud cell in blocks (one clouds.png texel).
 const CELL_SIZE: f32 = 12.0;
-/// Scroll speed factor: vanilla `cloudOffset * 0.030000001` blocks per tick.
 const SCROLL_PER_TICK: f32 = 0.030_000_001;
-/// Fixed Z bias vanilla adds to the cloud origin.
 const Z_BIAS: f64 = 3.96;
 
-/// Distance (blocks) by which cloud alpha fades to zero (vanilla
-/// `FogCloudsEnd`). Kept just below the far-plane floor so the fade completes
-/// before clouds would clip at it into a hard circle.
-// TODO: vanilla reaches its full `cloudRange` (128 chunks / 2048 blocks). Here
-// the far-plane floor (`camera::MIN_FAR`) caps the reach so the instance
-// buffers stay a fixed size; matching vanilla means a cloud-range option that
-// also raises the floor, like vanilla's `depthFar` does.
 const CLOUD_FADE_END: f32 = MIN_FAR * 0.96;
-/// Disc radius in cells: `ceil(CLOUD_FADE_END / CELL_SIZE)`.
 const RADIUS_CELLS: i32 = (CLOUD_FADE_END as i32 + CELL_SIZE as i32 - 1) / CELL_SIZE as i32;
 
-/// Upper bound on faces for the per-frame instance buffers, mirroring vanilla
-/// `CloudRenderer.getSizeForCloudDistance` (4 faces per cell over the disc's
-/// bounding diamond, plus the 9 interior cells' extra faces).
 const MAX_FACES: usize = {
     let span = ((RADIUS_CELLS + 1) * 2) as usize;
     (span * span / 2) * 4 + 54
 };
 
-/// Face direction, matching vanilla `Direction.get3DDataValue()` and the corner
-/// table in `clouds.vert`.
 const DIR_DOWN: u8 = 0;
 const DIR_UP: u8 = 1;
 const DIR_NORTH: u8 = 2;
@@ -43,25 +26,18 @@ const DIR_SOUTH: u8 = 3;
 const DIR_WEST: u8 = 4;
 const DIR_EAST: u8 = 5;
 
-/// Face flag bit: reverse winding so the face is visible from inside the cell.
 const FLAG_INSIDE_FACE: u8 = 1 << 4;
-/// Face flag bit: use the top (brightest) shade regardless of direction.
 const FLAG_USE_TOP_COLOR: u8 = 1 << 5;
 
-/// One cloud face, drawn as a single instance; the vertex shader expands it
-/// into a quad. Layout must match the attributes in `clouds.vert`.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct CloudFace {
-    /// Relative cell offset (rcx, rcz) from the centre cell.
     cell: [i16; 2],
     dir: u8,
     flags: u8,
+    _pad: [u8; 2],
 }
 
-/// Push constants shared by both stages: cloud tint (rgba) and the camera-
-/// relative grid offset (xyz) plus the fog-fade end (w). Layout must match
-/// `clouds.vert`/`clouds.frag`.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct CloudPush {
@@ -69,9 +45,6 @@ struct CloudPush {
     offset: [f32; 4],
 }
 
-/// Where the camera sits relative to the cloud slab, used to cull the unseen
-/// horizontal face (vanilla `RelativeCameraPos`). Drawing both top and bottom
-/// makes the two 4-block-apart faces z-fight at distance.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RelativePos {
     Above,
@@ -82,7 +55,6 @@ enum RelativePos {
 #[derive(Clone, Copy, Default)]
 struct CloudCell {
     present: bool,
-    /// Whether the neighbour in each direction is empty (cull the shared face).
     north_empty: bool,
     east_empty: bool,
     south_empty: bool,
@@ -112,9 +84,7 @@ pub struct CloudPipeline {
 
     grid: Option<CloudGrid>,
 
-    /// Cached CPU face list and the state it was built for.
     faces: Vec<CloudFace>,
-    /// Per-frame flag: the frame's instance buffer still holds a stale mesh.
     dirty: Vec<bool>,
     prev_cell_x: i32,
     prev_cell_z: i32,
@@ -198,11 +168,8 @@ impl CloudPipeline {
             return;
         };
 
-        // Stay in f64 until the values are camera-relative so the cell phase
-        // and layer height keep precision at extreme coordinates.
         let eye = *camera.position + camera.third_person_offset().as_dvec3();
 
-        // Scroll the cloud field in +X over time (vanilla `cloudOffset`).
         let cycle = grid.width as i64 * 400;
         let game_time = sky.game_time as i64;
         let cloud_offset = game_time.rem_euclid(cycle) as f32 + sky.partial_tick;
@@ -228,9 +195,6 @@ impl CloudPipeline {
             RelativePos::Inside
         };
 
-        // Rebuild the cached mesh only when the camera crosses a cell, the mode
-        // changes, or the camera moves above/below the layer (which face is
-        // visible changes); the smooth sub-cell scroll is applied via the offset.
         if !self.have_mesh
             || cell_x != self.prev_cell_x
             || cell_z != self.prev_cell_z
@@ -257,9 +221,6 @@ impl CloudPipeline {
         }
 
         let tint = sky.attributes.cloud_color.to_array();
-        // offset.w carries the fog-fade end (blocks): the fragment shader fades
-        // cloud alpha to zero by this distance so the field melts into the sky
-        // instead of ending at a hard circle.
         let push = CloudPush {
             tint,
             offset: [-x_in_cell, relative_bottom_y, -z_in_cell, CLOUD_FADE_END],
@@ -278,7 +239,6 @@ impl CloudPipeline {
             0,
             bytemuck::bytes_of(&push),
         );
-        // Six vertices (two triangles) per face, one instance per face.
         pass.draw(6, self.faces.len() as u32, 0, 0);
     }
 
@@ -305,8 +265,6 @@ impl CloudPipeline {
             }
         };
 
-        // Vanilla `CloudRenderer.buildMesh`: walk rings outward from the centre so
-        // nearer cells draw first (depth-write keeps the closest face).
         for ring in 0..=(2 * RADIUS_CELLS) {
             for rcx in -ring..=ring {
                 let rcz = ring - rcx.abs();
@@ -353,20 +311,14 @@ fn emit_face(faces: &mut Vec<CloudFace>, rcx: i32, rcz: i32, dir: u8, flags: u8)
         cell: [rcx as i16, rcz as i16],
         dir,
         flags,
+        _pad: [0; 2],
     });
 }
 
-/// Fast clouds: a single down-facing quad at the layer bottom using the top
-/// (brightest) shade (vanilla `buildFlatCell` → `encodeFace(DOWN,
-/// USE_TOP_COLOR)`).
 fn build_flat_cell(faces: &mut Vec<CloudFace>, rcx: i32, rcz: i32) {
     emit_face(faces, rcx, rcz, DIR_DOWN, FLAG_USE_TOP_COLOR);
 }
 
-/// Fancy clouds: an extruded 3D box per cell, mirroring vanilla
-/// `CloudRenderer.buildExtrudedCell`. Exterior faces use normal winding and
-/// back-face culling; the centre 3x3 cells additionally get reversed-winding
-/// inside faces so the cloud remains visible when the camera enters the volume.
 fn build_extruded_cell(
     faces: &mut Vec<CloudFace>,
     rcx: i32,
@@ -400,9 +352,6 @@ fn build_extruded_cell(
     }
 }
 
-/// Loads and parses `clouds.png` into a cell grid. A texel is a cloud cell when
-/// its alpha is >= 10 (vanilla `isCellEmpty`). The texel colour is ignored —
-/// vanilla colours clouds purely from the uniform tint times the face shade.
 fn load_cloud_grid(jar_assets_dir: &Path, asset_index: &Option<AssetIndex>) -> Option<CloudGrid> {
     let key = "minecraft/textures/environment/clouds.png";
     let path = resolve_asset_path(jar_assets_dir, asset_index, key);
@@ -459,18 +408,12 @@ fn create_pipeline(
     layout: rhi::backend::PipelineLayout,
     cull_mode: rhi::CullMode,
 ) -> rhi::backend::RenderPipeline {
-    // Each instance is a packed cloud face, expanded to a quad by the vertex
-    // shader via gl_VertexIndex.
     rhi::backend::create_render_pipeline(
         device,
         targets,
         layout,
         &rhi::RenderPipelineDesc {
             cull_mode,
-            // Depth-test against the world so terrain occludes clouds. Write
-            // depth too: clouds are near-opaque (0.8 alpha) and 3D boxes
-            // overlap, so depth writes keep the nearest cloud face and avoid
-            // double-blending the layer.
             depth: Some(rhi::DepthState {
                 compare: rhi::CompareFunction::Less,
                 ..rhi::DepthState::WRITE

@@ -4,28 +4,21 @@ use crate::renderer::chunk::buffer::CHUNK_VERTEX_BUFFERS;
 use crate::renderer::pipelines::lightmap::Lightmap;
 use crate::renderer::{rhi, shader, util};
 
-/// Set 1: the atlas, its sampler and the sprite-rectangle buffer the fragment
-/// shaders resolve sprite UVs with.
 const ATLAS_LAYOUT: &[rhi::BindGroupLayoutEntry] = &[
     util::FRAGMENT_TEXTURE[0],
     util::FRAGMENT_TEXTURE[1],
-    rhi::BindGroupLayoutEntry::storage(rhi::ShaderStages::FRAGMENT),
+    rhi::BindGroupLayoutEntry::uniform(rhi::ShaderStages::FRAGMENT),
 ];
 
 pub struct ChunkPipeline {
-    /// Opaque terrain: no discard, early-Z. Drawn first (front-to-back).
     pub pipeline_solid: rhi::backend::RenderPipeline,
-    /// Cutout terrain: alpha-test discard. Drawn after solid.
     pub pipeline_cutout: rhi::backend::RenderPipeline,
-    /// Translucent water variant: alpha blending on, depth write off. Shares
-    /// the terrain pipelines' layout and bind groups.
     pub water_pipeline: rhi::backend::RenderPipeline,
     pub pipeline_layout: rhi::backend::PipelineLayout,
     pub camera_layout: rhi::backend::BindGroupLayout,
     pub atlas_layout: rhi::backend::BindGroupLayout,
     pub camera_sets: Vec<rhi::backend::BindGroup>,
     pub atlas_set: rhi::backend::BindGroup,
-    /// Set 2, which [`Lightmap`] owns.
     lightmap_set: rhi::backend::BindGroup,
     camera_buffers: Vec<rhi::backend::Buffer>,
 }
@@ -39,8 +32,6 @@ impl ChunkPipeline {
     ) -> Self {
         let camera_layout = rhi::backend::create_bind_group_layout(device, util::VERTEX_UNIFORM);
         let atlas_layout = rhi::backend::create_bind_group_layout(device, ATLAS_LAYOUT);
-        // Water pushes its section origin + fade per draw (water.vert); the
-        // indirect passes read them per-instance and ignore the range.
         let pipeline_layout = rhi::backend::create_pipeline_layout(
             device,
             &[camera_layout, atlas_layout, lightmap.layout],
@@ -91,7 +82,7 @@ impl ChunkPipeline {
                 sampler,
                 (
                     2,
-                    rhi::backend::BindingResource::storage(
+                    rhi::backend::BindingResource::uniform(
                         &atlas.sprite_rects,
                         atlas.sprite_rects_bytes(),
                     ),
@@ -109,7 +100,6 @@ impl ChunkPipeline {
         self.bind_with(pass, pipeline, frame);
     }
 
-    /// Bind the translucent water pipeline (same bind groups as `bind`).
     pub fn bind_water(&self, pass: &mut rhi::backend::RenderPassEncoder, frame: usize) {
         self.bind_with(pass, self.water_pipeline, frame);
     }
@@ -141,10 +131,6 @@ impl ChunkPipeline {
     }
 }
 
-/// Builds the chunk pipelines: `solid` (chunk_solid.frag, no discard,
-/// early-Z), `cutout` (chunk.frag, alpha-test discard) and translucent
-/// `water`. Water reads only the packed vertices; the terrain pipelines also
-/// read the per-instance meta.
 fn create_pipelines(
     device: &rhi::backend::Device,
     targets: rhi::backend::PipelineTargets,

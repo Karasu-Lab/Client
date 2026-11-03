@@ -19,8 +19,6 @@ const MIN_BUCKETS: u32 = 128;
 const MAX_BUCKETS: u32 = 2048;
 const VRAM_BUDGET_FRACTION: f64 = 0.25;
 
-/// The cull pass's bindings: meta, frustum, solid indirect/count, cutout
-/// indirect/count.
 const CULL_BINDINGS: &[rhi::BindGroupLayoutEntry] = &[
     rhi::BindGroupLayoutEntry::storage(rhi::ShaderStages::COMPUTE),
     rhi::BindGroupLayoutEntry::uniform(rhi::ShaderStages::COMPUTE),
@@ -31,29 +29,17 @@ const CULL_BINDINGS: &[rhi::BindGroupLayoutEntry] = &[
 ];
 const COUNT_SIZE: u64 = 4;
 const FRUSTUM_SIZE: u64 = size_of::<FrustumData>() as u64;
-/// Per-section fade-in length, shared by the opaque indirect path and water.
 const FADE_DURATION_MS: f32 = 1000.0;
-/// Columns within this squared X/Z distance of the camera render opaque
-/// immediately and never fade in.
 const NEARBY_DIST_SQ: f32 = 768.0;
 
-/// Whether a column's center is within the always-near X/Z radius of the eye
-/// (vanilla `isNearby`), rebased in f64 for precision at extreme coordinates.
-/// Also gates mesh-scheduling tiers (`in_game::apply_visibility`).
 pub fn column_is_near(pos: ChunkPos, eye: DVec3) -> bool {
     let dx = pos.x as f64 * 16.0 + 8.0 - eye.x;
     let dz = pos.z as f64 * 16.0 + 8.0 - eye.z;
     dx * dx + dz * dz < NEARBY_DIST_SQ as f64
 }
 
-/// First-fit free-list sub-allocator over a fixed element range, coalescing on
-/// free. Each section gets an exact-size vertex (and index) slice instead of
-/// whole fixed buckets — vanilla's `UberGpuBuffer` model — so re-uploading one
-/// section never disturbs the rest and there is no per-section bucket waste.
 struct FreeList {
     capacity: u32,
-    /// Free regions `(offset, len)`, sorted by offset and coalesced (no two
-    /// adjacent).
     free: Vec<(u32, u32)>,
 }
 
@@ -70,7 +56,6 @@ impl FreeList {
         self.free.push((0, self.capacity));
     }
 
-    /// Allocate `n` contiguous elements; `None` if no region is large enough.
     fn alloc(&mut self, n: u32) -> Option<u32> {
         for i in 0..self.free.len() {
             let (off, len) = self.free[i];
@@ -86,7 +71,6 @@ impl FreeList {
         None
     }
 
-    /// Return a region, coalescing with an adjacent free region on either side.
     fn free_region(&mut self, off: u32, n: u32) {
         let pos = self.free.partition_point(|&(o, _)| o < off);
         self.free.insert(pos, (off, n));
@@ -125,26 +109,17 @@ fn compute_bucket_count(device_local_bytes: u64) -> u32 {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct ChunkMeta {
-    /// Section-local vertex bounds; the cull shader rebases them via `origin`.
     aabb_min: [f32; 4],
     aabb_max: [f32; 4],
     index_count: u32,
     first_index: u32,
     vertex_offset: i32,
     visibility: u32,
-    /// Absolute section origin as integers (vanilla `ChunkPosition`), bound
-    /// as a per-instance vertex attribute; the vertex shader subtracts the
-    /// camera block position in integer math, so no large f32 is ever
-    /// formed.
     origin: [i32; 3],
-    /// Read by the cull shader to split the solid/cutout draws; fills the
-    /// fourth lane of `origin`'s 16-byte slot, keeping the struct at 64 bytes.
     solid_index_count: u32,
 }
 
 impl ChunkMeta {
-    /// An instance entry for a draw outside the section pool: just the
-    /// origin, fully faded in.
     pub(crate) fn instance(origin: [i32; 3]) -> Self {
         Self {
             origin,
@@ -154,11 +129,9 @@ impl ChunkMeta {
     }
 }
 
-/// [`PackedVertex`]'s attributes; a [`PackVertex`] starts with one.
 const VERTEX_ATTRIBUTES: [rhi::VertexAttribute; 5] = {
     const POS: u32 = offset_of!(PackedVertex, pos) as u32;
     [
-        // pos, split into xy + z lanes
         rhi::VertexAttribute {
             location: 0,
             format: rhi::VertexFormat::Unorm16x2,
@@ -208,13 +181,9 @@ const PACK_VERTEX_ATTRIBUTES: [rhi::VertexAttribute; 7] = {
     ]
 };
 
-/// Vertex input for the chunk pipeline: buffer 0 is the packed per-vertex
-/// pool, buffer 1 is the meta buffer read per-instance (origin + fade),
-/// indexed by the `first_instance` the cull shader writes.
 pub const CHUNK_VERTEX_BUFFERS: [rhi::VertexBufferLayout<'static>; 2] =
     chunk_vertex_buffers(size_of::<PackedVertex>(), &VERTEX_ATTRIBUTES);
 
-/// [`CHUNK_VERTEX_BUFFERS`] over [`PackVertex`]es, for a shader pack.
 pub const PACK_CHUNK_VERTEX_BUFFERS: [rhi::VertexBufferLayout<'static>; 2] =
     chunk_vertex_buffers(size_of::<PackVertex>(), &PACK_VERTEX_ATTRIBUTES);
 
@@ -257,10 +226,6 @@ struct DrawCommand {
     first_instance: u32,
 }
 
-/// Camera-relative frustum test of a section-local AABB, mirroring `cull.comp`
-/// (the GPU opaque path); used by the CPU-driven water pass. The section
-/// origin is rebased against the eye in f64 for precision at extreme
-/// coordinates.
 fn aabb_in_frustum(aabb: &ChunkAABB, origin: [i32; 3], planes: &[[f32; 4]; 6], eye: DVec3) -> bool {
     let base = (origin_dvec(origin) - eye).as_vec3();
     let mn = [
@@ -285,20 +250,14 @@ fn aabb_in_frustum(aabb: &ChunkAABB, origin: [i32; 3], planes: &[[f32; 4]; 6], e
     true
 }
 
-/// An integer section origin widened for f64 math.
 fn origin_dvec(origin: [i32; 3]) -> DVec3 {
     DVec3::new(origin[0] as f64, origin[1] as f64, origin[2] as f64)
 }
 
-/// Whether `pos`'s column renders opaque immediately: fading is off, or the
-/// column is near the eye (a nearby column never fades in).
 fn column_nearby(fade_enabled: bool, pos: ChunkPos, eye: DVec3) -> bool {
     !fade_enabled || column_is_near(pos, eye)
 }
 
-/// Rebuilds the draw list into `out`: one [`ChunkMeta`] per uploaded section
-/// the occlusion mask keeps (all of them without one), with its fade-in
-/// factor at `now`.
 pub(crate) fn build_meta(
     chunks: &HashMap<ChunkPos, ChunkAlloc>,
     chunk_visibility: Option<&HashMap<ChunkPos, u32>>,
@@ -309,12 +268,8 @@ pub(crate) fn build_meta(
 ) {
     out.clear();
     for (pos, alloc) in chunks.iter() {
-        // Near columns never fade; otherwise each section fades on its own
-        // timer (X/Z distance is per-column).
         let nearby = column_nearby(fade_enabled, *pos, eye);
 
-        // CPU omission: the visibility graph's mask skips sections proven
-        // occluded, so they never reach the GPU cull (absent => all draw).
         let col_vis = chunk_visibility
             .and_then(|v| v.get(pos).copied())
             .unwrap_or(u32::MAX);
@@ -338,10 +293,7 @@ pub(crate) fn build_meta(
     }
 }
 
-/// Sorts the draw list front-to-back by section center distance to `eye`.
 pub(crate) fn sort_meta(meta: &mut [ChunkMeta], eye: DVec3) {
-    // Section centers rebased against the eye in f64, for precision at
-    // extreme coordinates.
     let center_dist_sq = |m: &ChunkMeta| {
         let center = DVec3::new(
             ((m.aabb_min[0] + m.aabb_max[0]) * 0.5) as f64,
@@ -362,45 +314,24 @@ pub(crate) fn sort_meta(meta: &mut [ChunkMeta], eye: DVec3) {
 struct FrustumData {
     planes: [[f32; 4]; 6],
     chunk_count: u32,
-    /// Camera block position (the render anchor as integers); the cull
-    /// subtracts it from the absolute integer section origins.
     cam_block: [i32; 3],
-    /// Eye position relative to `cam_block` (small, full precision).
     frac: [f32; 3],
-    /// Pads the struct to a 16-byte multiple so the buffer always covers the
-    /// std140 block size.
     _pad: f32,
 }
 
-/// One uploaded 16³ section: a self-contained indexed draw plus its tight AABB.
-/// `first_index`/`index_count` are the section's index slice and
-/// `vertex_offset` its vertex slice base; `vtx_len` is the slice length, kept
-/// so the slices can be returned to the free-lists on removal. `uploaded_at`
-/// drives the per-section fade so editing one section never re-fades the rest
-/// of the column.
 pub(crate) struct SectionAlloc {
     section_index: i32,
     aabb: ChunkAABB,
-    /// Section world origin (`chunk*16`, `min_y + si*16`), used to rebase the
-    /// quantized vertices and passed to the GPU via `ChunkMeta.origin`.
     origin: [i32; 3],
     first_index: u32,
-    /// Opaque index count (the GPU-culled draw); water is excluded.
     index_count: u32,
-    /// Leading indices belonging to the solid (no-discard) pass; the rest are
-    /// cutout. Passed to the GPU via `ChunkMeta.origin[3]`.
     solid_index_count: u32,
-    /// Translucent water index slice, stored right after the opaque indices in
-    /// the same index allocation. Drawn in a separate blended pass.
     water_first_index: u32,
     water_index_count: u32,
-    /// Total allocated index slice length (opaque + water), for freeing.
     idx_len: u32,
     vertex_offset: i32,
     vtx_len: u32,
     uploaded_at: crate::clock::Instant,
-    /// Upload epoch this section's geometry came from; an older upload is
-    /// rejected. See [`ChunkMeshData::upload_epoch`].
     epoch: u64,
 }
 
@@ -410,8 +341,6 @@ pub(crate) struct ChunkAlloc {
 
 #[cfg(any(test, feature = "cpu-bench"))]
 impl ChunkAlloc {
-    /// A column of synthetic full-size sections at `section_indices`, all
-    /// uploaded at `uploaded_at`, for tests and the CPU bench.
     pub(crate) fn synthetic(
         pos: ChunkPos,
         min_y: i32,
@@ -445,8 +374,6 @@ impl ChunkAlloc {
 
 pub struct ChunkBufferStore {
     indirect_draw: IndirectDrawFeatures,
-    /// Capacity (in draws) of the per-frame meta/indirect buffers. Grown on
-    /// demand because per-section packing yields many more draws than buckets.
     max_meta: usize,
     vertex_buffer: rhi::backend::Buffer,
     index_buffer: rhi::backend::Buffer,
@@ -454,48 +381,28 @@ pub struct ChunkBufferStore {
     staging_size: u64,
     use_staging: bool,
     format: TerrainFormat,
-    /// Vertices the pool holds, in either format.
     pool_vertices: u32,
 
-    /// Exact-size sub-allocators over the vertex and index pools (in elements).
     vtx_free: FreeList,
     idx_free: FreeList,
     chunks: HashMap<ChunkPos, ChunkAlloc>,
-    /// Per-column bitmask of occlusion-visible section indices (bit `si`), from
-    /// the CPU visibility graph. A column absent here defaults to fully
-    /// visible, so freshly-loaded-but-not-yet-graphed columns still draw.
     chunk_visibility: HashMap<ChunkPos, u32>,
     meta_dirty: bool,
-    /// End of the current fade-in window. While `now < fade_until` the
-    /// per-section fade values change each frame, so `cached_meta` must be
-    /// rebuilt; an O(1) check replacing the old all-sections scan.
     fade_until: crate::clock::Instant,
-    /// Eye position at the last front-to-back sort; the sort (an early-Z
-    /// optimization) is only redone once the camera moves past a threshold.
     last_sort_cam: DVec3,
 
-    compute_pipeline: rhi::backend::ComputePipeline,
-    compute_layout: rhi::backend::PipelineLayout,
-    cull_layout: rhi::backend::BindGroupLayout,
+    compute_pipeline: Option<rhi::backend::ComputePipeline>,
+    compute_layout: Option<rhi::backend::PipelineLayout>,
+    cull_layout: Option<rhi::backend::BindGroupLayout>,
 
     camera: DrawList,
-    /// A shader pack's shadow view, made on its first cull.
     shadow: Option<DrawList>,
-    /// The shadow list needs rebuilding from the sections.
     shadow_dirty: bool,
-    /// The camera's draw counts, copied after each cull for the debug overlay.
     count_readbacks: Vec<rhi::backend::Buffer>,
     fade_enabled: bool,
-    /// Post-cull section draw count read back from the GPU (lags a few frames);
-    /// exposed for the debug overlay so occlusion's effect is visible.
     last_draw_count: u32,
 
-    /// Monotonic frame counter, bumped once per rendered frame in
-    /// `begin_frame`.
     frame_seq: u64,
-    /// Slices freed by a re-mesh or unload, each tagged with the `frame_seq` at
-    /// which it's safe to reclaim (`MAX_FRAMES_IN_FLIGHT` out, so no in-flight
-    /// frame still draws it). Drained in `begin_frame`.
     pending_free: VecDeque<(u64, (u32, u32, u32, u32))>,
 }
 
@@ -524,10 +431,6 @@ impl ChunkBufferStore {
             rhi::BufferUsages::INDEX,
         );
 
-        // Discrete GPUs batch a frame's uploads through this buffer in one
-        // transfer, so size it to hold several columns and keep sub-flushes rare.
-        // The integrated path writes mapped memory directly and never touches it.
-        // Sized for vanilla vertices; a shader pack's larger ones flush sooner.
         let staging_size = if use_staging {
             BYTES_PER_BUCKET * 16
         } else {
@@ -556,15 +459,12 @@ impl ChunkBufferStore {
         let vtx_free = FreeList::new(pool_vertices);
         let idx_free = FreeList::new(total_buckets * BUCKET_INDICES);
 
-        // Per-section packing yields many more draws than buckets, so pre-size
-        // generously: growth (`ensure_meta_capacity`) needs a `device.wait_idle`
-        // to safely rewrite the bind groups, and we don't want that stall
-        // firing mid-stream. The remaining grow path stays as a rare safety net.
         let max_meta = (total_buckets * 16).max(8192) as usize;
         let meta_size = (max_meta * size_of::<ChunkMeta>()) as u64;
         let indirect_size = (max_meta * size_of::<DrawCommand>()) as u64;
 
         let count_readbacks = (0..MAX_FRAMES_IN_FLIGHT)
+            .filter(|_| indirect_draw.gpu_cull)
             .map(|_| {
                 rhi::backend::Buffer::new(
                     device,
@@ -576,16 +476,21 @@ impl ChunkBufferStore {
             })
             .collect();
 
-        let cull_layout = rhi::backend::create_bind_group_layout(device, CULL_BINDINGS);
+        let cull_layout = indirect_draw
+            .gpu_cull
+            .then(|| rhi::backend::create_bind_group_layout(device, CULL_BINDINGS));
         let camera = DrawList::new(device, cull_layout, meta_size, indirect_size);
-        let compute_layout = rhi::backend::create_pipeline_layout(device, &[cull_layout], None);
+        let compute_layout = cull_layout
+            .map(|layout| rhi::backend::create_pipeline_layout(device, &[layout], None));
 
-        let compute_pipeline = rhi::backend::create_compute_pipeline(
-            device,
-            compute_layout,
-            "cull",
-            shader::include_shader!("cull.comp"),
-        );
+        let compute_pipeline = compute_layout.map(|layout| {
+            rhi::backend::create_compute_pipeline(
+                device,
+                layout,
+                "cull",
+                shader::include_shader!("cull.comp"),
+            )
+        });
 
         Self {
             indirect_draw,
@@ -618,14 +523,10 @@ impl ChunkBufferStore {
         }
     }
 
-    /// Sections drawn last time this frame slot ran (post frustum + occlusion
-    /// cull). Read back from the GPU count buffer, so it lags a few frames.
     pub fn sections_drawn(&self) -> u32 {
         self.last_draw_count
     }
 
-    /// Submit the accumulated staging copies as a single transfer and wait for
-    /// it, so a frame's uploads synchronize once instead of once per mesh.
     fn flush_transfer(
         &mut self,
         device: &rhi::backend::Device,
@@ -644,13 +545,6 @@ impl ChunkBufferStore {
         });
     }
 
-    /// Upload a batch of mesh results, each replacing the sections in its
-    /// `mesh.replaced` range. Staging copies for the whole batch are coalesced
-    /// into as few transfers as the staging buffer holds (one per overflow,
-    /// plus a final flush), each synchronized by a single fence wait — so a
-    /// streaming frame stalls once, not once per mesh. Returns, per mesh
-    /// that hit pool exhaustion, the section indices that were dropped and
-    /// need re-meshing.
     pub fn upload_batch(
         &mut self,
         device: &rhi::backend::Device,
@@ -661,9 +555,6 @@ impl ChunkBufferStore {
             return needs_remesh;
         }
 
-        // Sub-allocate an exact-size vertex + index slice for each non-empty
-        // section. Indices stay section-local and `vertex_offset` rebases the draw,
-        // so no packing or rebasing is needed — just one slice per section.
         struct Plan<'a> {
             section_index: i32,
             verts: &'a [u8],
@@ -678,8 +569,6 @@ impl ChunkBufferStore {
         }
 
         impl Plan<'_> {
-            /// Writes the opaque then water indices at byte `off`, returning
-            /// how many bytes that took.
             fn write_indices(&self, buffer: &mut rhi::backend::Buffer, off: usize) -> usize {
                 let opaque: &[u8] = bytemuck::cast_slice(self.indices);
                 buffer.write_at(off, opaque);
@@ -688,9 +577,6 @@ impl ChunkBufferStore {
             }
         }
 
-        // Retired slices only reclaim in `begin_frame`; if rendering is paused
-        // while meshing continues (e.g. minimized window) the backlog grows
-        // unbounded. Past a sane bound, force a GPU wait and reclaim it all.
         const PENDING_FREE_DRAIN_THRESHOLD: usize = 8192;
         if self.pending_free.len() > PENDING_FREE_DRAIN_THRESHOLD {
             device.wait_idle();
@@ -700,17 +586,12 @@ impl ChunkBufferStore {
         }
 
         let staging_half = self.staging_size as usize / 2;
-        // Copies accumulated for the current (not-yet-submitted) transfer, and the
-        // running write cursors into each half of the staging buffer.
         let mut copy_v: Vec<rhi::BufferCopy> = Vec::new();
         let mut copy_i: Vec<rhi::BufferCopy> = Vec::new();
         let mut stg_v = 0usize;
         let mut stg_i = 0usize;
 
         for mesh in meshes {
-            // The covered sections this job is authoritative for: reject any where
-            // a newer upload (higher epoch) already landed. See
-            // `ChunkMeshData::upload_epoch`.
             let accepted: std::collections::HashSet<i32> = mesh
                 .replaced
                 .clone()
@@ -725,11 +606,6 @@ impl ChunkBufferStore {
                 })
                 .collect();
 
-            // Retire the slices of every accepted covered section: the re-meshed
-            // ones are re-allocated below, the now-empty ones simply vanish.
-            // Remember which were present so a re-meshed section swaps instantly
-            // while a freshly revealed one still fades in. Rejected sections are
-            // left untouched.
             let mut freed: Vec<(u32, u32, u32, u32)> = Vec::new();
             let mut was_present: std::collections::HashSet<i32> = std::collections::HashSet::new();
             if let Some(entry) = self.chunks.get_mut(&mesh.pos) {
@@ -744,12 +620,8 @@ impl ChunkBufferStore {
                 });
             }
             self.retire_slices(freed.iter().copied());
-            // Sections were removed/replaced, so the draw list must be rebuilt even
-            // if this mesh is skipped below (otherwise it keeps drawing a retired,
-            // soon-reused slice).
             self.meta_dirty = true;
 
-            // A mesh from before a format change is remeshed anyway.
             let upload_secs: Vec<&SectionMesh> = mesh
                 .sections
                 .iter()
@@ -758,8 +630,6 @@ impl ChunkBufferStore {
                 .collect();
 
             if upload_secs.is_empty() {
-                // Every accepted section is now empty (freed above); drop the
-                // column if nothing remains.
                 if self
                     .chunks
                     .get(&mesh.pos)
@@ -771,9 +641,6 @@ impl ChunkBufferStore {
             }
 
             if self.use_staging {
-                // Verts and indices share the staging buffer (two halves). A chunk
-                // too large for one half is skipped rather than overflowing the
-                // buffer. This is permanent, so it's not reported for retry.
                 let v_bytes: usize = upload_secs.iter().map(|s| s.vertices.bytes().len()).sum();
                 let i_bytes: usize = upload_secs
                     .iter()
@@ -791,13 +658,10 @@ impl ChunkBufferStore {
             }
 
             let mut plans: Vec<Plan> = Vec::with_capacity(upload_secs.len());
-            // (vtx_off, vtx_len, idx_off, idx_len) taken for this mesh, for
-            // rollback if the pool runs out partway through a column.
             let mut taken: Vec<(u32, u32, u32, u32)> = Vec::new();
             let mut pool_full = false;
             for sec in &upload_secs {
                 let vcount = sec.vertices.len() as u32;
-                // Opaque and water indices share one slice (opaque first, water after).
                 let icount = (sec.indices.len() + sec.water_indices.len()) as u32;
                 if vcount == 0 || icount == 0 {
                     continue;
@@ -838,13 +702,10 @@ impl ChunkBufferStore {
                 });
             }
             if pool_full {
-                // The accepted sections were retired above; report them so the
-                // next rescan re-enqueues them.
                 needs_remesh.push((mesh.pos, accepted.iter().copied().collect()));
                 continue;
             }
             if plans.is_empty() {
-                // Nothing to upload (all accepted sections were empty).
                 continue;
             }
 
@@ -854,8 +715,6 @@ impl ChunkBufferStore {
                     .iter()
                     .map(|p| (p.indices.len() + p.water_indices.len()) * INDEX_SIZE as usize)
                     .sum();
-                // This mesh alone fits a half (checked above), so a flush always
-                // makes room: submit the pending transfer and reset the cursors.
                 if stg_v + mv > staging_half || stg_i + mi > staging_half {
                     self.flush_transfer(device, &copy_v, &copy_i);
                     copy_v.clear();
@@ -906,7 +765,6 @@ impl ChunkBufferStore {
                 idx_len: (p.indices.len() + p.water_indices.len()) as u32,
                 vertex_offset: p.vtx_off as i32,
                 vtx_len: p.vertex_count,
-                // A re-meshed section swaps instantly; a freshly revealed one fades in.
                 uploaded_at: if was_present.contains(&p.section_index) {
                     now.checked_sub(std::time::Duration::from_secs(2))
                         .unwrap_or(now)
@@ -916,11 +774,6 @@ impl ChunkBufferStore {
                 epoch: mesh.upload_epoch,
             });
 
-            // Freshly revealed sections fade in, so extend the fade window the
-            // cull's O(1) check reads; re-meshed-only uploads swap instantly.
-            // Nearby columns never fade, so extending for them only forces
-            // redundant rebuilds — skip them. `last_sort_cam` is the camera the
-            // draw list is keyed to (unset => far, the safe default).
             let revealed = plans
                 .iter()
                 .any(|p| !was_present.contains(&p.section_index));
@@ -938,7 +791,6 @@ impl ChunkBufferStore {
                 .extend(new_sections);
         }
 
-        // Flush whatever remains accumulated from the last (or only) batch.
         if self.use_staging {
             self.flush_transfer(device, &copy_v, &copy_i);
         }
@@ -949,8 +801,6 @@ impl ChunkBufferStore {
         needs_remesh
     }
 
-    /// Grow the per-frame meta and indirect buffers so they can hold `needed`
-    /// section draws. No-op while capacity suffices.
     fn ensure_meta_capacity(&mut self, device: &rhi::backend::Device, needed: usize) {
         if needed <= self.max_meta {
             return;
@@ -959,8 +809,6 @@ impl ChunkBufferStore {
             .next_power_of_two()
             .max(self.max_meta * 2);
 
-        // The meta/indirect buffers are referenced by every in-flight frame's
-        // bind group; wait the GPU out before freeing them.
         device.wait_idle();
 
         let meta_size = (new_max * size_of::<ChunkMeta>()) as u64;
@@ -972,26 +820,17 @@ impl ChunkBufferStore {
         self.max_meta = new_max;
     }
 
-    /// Return one slice's vertex and index ranges to the pools.
     fn free_slice(&mut self, (vo, vl, io, il): (u32, u32, u32, u32)) {
         self.vtx_free.free_region(vo, vl);
         self.idx_free.free_region(io, il);
     }
 
-    /// Return slices immediately. Only safe for slices never submitted to a
-    /// frame (e.g. rolling back allocations made earlier in the same `upload`);
-    /// slices that may still be drawn by an in-flight frame must go through
-    /// `retire_slices`.
     fn free_slices(&mut self, slices: &[(u32, u32, u32, u32)]) {
         for &slice in slices {
             self.free_slice(slice);
         }
     }
 
-    /// Defer returning slices to the pools until `MAX_FRAMES_IN_FLIGHT` frames
-    /// have passed, so the GPU can't still be reading them from an in-flight
-    /// frame. Use for slices that were potentially drawn (re-mesh replacement,
-    /// chunk unload).
     fn retire_slices(&mut self, slices: impl IntoIterator<Item = (u32, u32, u32, u32)>) {
         let retire_at = self.frame_seq + MAX_FRAMES_IN_FLIGHT as u64;
         for slice in slices {
@@ -999,10 +838,6 @@ impl ChunkBufferStore {
         }
     }
 
-    /// Advance one frame and reclaim any slices whose retirement deadline has
-    /// passed. Call once per rendered frame, right after the frame's fence has
-    /// been waited (that wait guarantees the frame from `MAX_FRAMES_IN_FLIGHT`
-    /// ago — and everything before it — is done on the GPU).
     pub fn begin_frame(&mut self) {
         self.frame_seq += 1;
         while self
@@ -1029,8 +864,6 @@ impl ChunkBufferStore {
         }
     }
 
-    /// Drops every mesh and, for a new format, remakes the vertex pool at its
-    /// stride. The caller waits for in-flight frames first.
     pub fn set_format(&mut self, device: &rhi::backend::Device, format: TerrainFormat) {
         self.clear();
         if format == self.format {
@@ -1061,8 +894,6 @@ impl ChunkBufferStore {
         self.fade_enabled = false;
     }
 
-    /// Where the pools' ranges overlap, if they do: live sections, slices
-    /// awaiting reclaim and free ranges must never share a vertex or index.
     #[cfg(feature = "test-harness")]
     pub fn slice_overlap(&self) -> Option<String> {
         let mut vertex = self.vtx_free.free.clone();
@@ -1092,17 +923,11 @@ impl ChunkBufferStore {
         self.chunks.len() as u32
     }
 
-    /// Push the CPU visibility graph's per-column visible-section masks.
-    /// Columns not present default to fully visible, so the cull only omits
-    /// sections the graph proved occluded.
     pub fn set_chunk_visibility(&mut self, vis: HashMap<ChunkPos, u32>) {
         self.chunk_visibility = vis;
         self.meta_dirty = true;
     }
 
-    /// `anchor` must be the same `Camera::anchor()` this frame's
-    /// `CameraUniform` was built with, so the cull's block/fraction split
-    /// matches the vertex shader's.
     pub fn dispatch_cull(
         &mut self,
         encoder: &rhi::backend::CommandEncoder,
@@ -1116,13 +941,8 @@ impl ChunkBufferStore {
         }
 
         let now = crate::clock::Instant::now();
-        // Re-sort only once the camera moves ~8 blocks; front-to-back order is an
-        // early-Z optimization, so finer staleness is harmless.
         const SORT_RECAM_SQ: f64 = 64.0;
 
-        // A fade in flight changes per-section visibility every frame, so the draw
-        // list must rebuild; otherwise it only changes on edits/loads/visibility
-        // (`meta_dirty`). The fade check is O(1) against `fade_until`.
         let any_fading = self.fade_enabled && now < self.fade_until;
         let content_changed = self.meta_dirty || any_fading;
 
@@ -1143,54 +963,53 @@ impl ChunkBufferStore {
         if content_changed || cam_moved {
             sort_meta(&mut self.camera.meta, eye);
             self.last_sort_cam = eye;
-            // Draw list reordered: every frame slot's meta buffer needs the refresh.
             self.camera.upload_pending = MAX_FRAMES_IN_FLIGHT as u32;
         }
 
-        // This frame slot's GPU work has completed (fence-waited at frame start),
-        // so its readback holds the previous cull's total (solid + cutout draws).
-        self.last_draw_count = self.count_readbacks[frame].read(|bytes| {
-            let counts: [u32; 2] = bytemuck::pod_read_unaligned(&bytes[..8]);
-            counts[0] + counts[1]
-        });
-        self.camera.cull(
-            encoder,
-            &self.compute_pipeline,
-            frame,
-            frustum,
-            anchor,
-            eye,
-            !self.indirect_draw.count,
-        );
-        encoder.transition_buffers(rhi::BufferUse::StorageWrite, rhi::BufferUse::CopySrc);
-        let readback = self.count_readbacks[frame].handle();
-        for (i, count) in [
-            &self.camera.count_buffers[frame],
-            &self.camera.count_cutout_buffers[frame],
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            encoder.copy_buffer(
-                count.handle(),
-                readback,
-                &[rhi::BufferCopy {
-                    src_offset: 0,
-                    dst_offset: i as u64 * COUNT_SIZE,
-                    size: COUNT_SIZE,
-                }],
+        if let Some(pipeline) = &self.compute_pipeline {
+            self.last_draw_count = self.count_readbacks[frame].read(|bytes| {
+                let counts: [u32; 2] = bytemuck::pod_read_unaligned(&bytes[..8]);
+                counts[0] + counts[1]
+            });
+            self.camera.cull(
+                encoder,
+                pipeline,
+                frame,
+                frustum,
+                anchor,
+                eye,
+                !self.indirect_draw.count,
             );
+            encoder.transition_buffers(rhi::BufferUse::StorageWrite, rhi::BufferUse::CopySrc);
+            let readback = self.count_readbacks[frame].handle();
+            for (i, count) in [
+                &self.camera.count_buffers[frame],
+                &self.camera.count_cutout_buffers[frame],
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                encoder.copy_buffer(
+                    count.handle(),
+                    readback,
+                    &[rhi::BufferCopy {
+                        src_offset: 0,
+                        dst_offset: i as u64 * COUNT_SIZE,
+                        size: COUNT_SIZE,
+                    }],
+                );
+            }
+            encoder.transition_buffers(rhi::BufferUse::CopyDst, rhi::BufferUse::HostRead);
+        } else {
+            self.camera.cull_on_cpu(frame, frustum, eye);
+            self.last_draw_count = self.camera.visible_solid.len() as u32;
         }
-        encoder.transition_buffers(rhi::BufferUse::CopyDst, rhi::BufferUse::HostRead);
 
         if !self.fade_enabled {
             self.fade_enabled = true;
         }
     }
 
-    /// Culls every section, the camera's occluded ones too, against a shader
-    /// pack's shadow view `frustum`, after this frame's
-    /// [`Self::dispatch_cull`].
     pub fn dispatch_shadow_cull(
         &mut self,
         device: &rhi::backend::Device,
@@ -1200,6 +1019,9 @@ impl ChunkBufferStore {
         anchor: DVec3,
         eye: DVec3,
     ) {
+        let Some(pipeline) = &self.compute_pipeline else {
+            return;
+        };
         if self.chunks.is_empty() {
             return;
         }
@@ -1222,7 +1044,7 @@ impl ChunkBufferStore {
         }
         shadow.cull(
             encoder,
-            &self.compute_pipeline,
+            pipeline,
             frame,
             frustum,
             anchor,
@@ -1231,10 +1053,6 @@ impl ChunkBufferStore {
         );
     }
 
-    /// Issue one render layer's indirect draws for `view`. `cutout` selects
-    /// the discard pass's draw list (drawn after `solid`, which lays down
-    /// depth); the caller binds the matching pipeline first. Both layers share
-    /// the vertex/index/meta buffers and the cull-written draw lists.
     pub fn draw_indirect(
         &self,
         pass: &rhi::backend::RenderPassEncoder,
@@ -1250,6 +1068,30 @@ impl ChunkBufferStore {
             },
         };
         if self.chunks.is_empty() {
+            return;
+        }
+
+        if self.compute_pipeline.is_none() {
+            let visible = if cutout {
+                &list.visible_cutout
+            } else {
+                &list.visible_solid
+            };
+            let vertex_size = self.format.vertex_size();
+            pass.set_index_buffer(self.index_buffer.handle());
+            for draw in visible {
+                pass.set_vertex_buffer_at(
+                    0,
+                    self.vertex_buffer.handle(),
+                    draw.vertex_offset as u64 * vertex_size,
+                );
+                pass.set_vertex_buffer_at(
+                    1,
+                    list.meta_buffers[frame].handle(),
+                    draw.meta_index as u64 * size_of::<ChunkMeta>() as u64,
+                );
+                pass.draw_indexed(draw.index_count, 1, draw.first_index, 0, 0);
+            }
             return;
         }
 
@@ -1270,8 +1112,6 @@ impl ChunkBufferStore {
             )
         };
 
-        // Binding 0: packed vertex pool. Binding 1: the meta buffer, read per
-        // instance for the section origin + fade (indexed by `first_instance`).
         pass.set_vertex_buffer(0, self.vertex_buffer.handle());
         pass.set_vertex_buffer(1, list.meta_buffers[frame].handle());
         pass.set_index_buffer(self.index_buffer.handle());
@@ -1287,10 +1127,6 @@ impl ChunkBufferStore {
         }
     }
 
-    /// Per-section fade-in factor in `[0, 1]`: near columns appear instantly,
-    /// the rest ramp over [`FADE_DURATION_MS`] from their upload time. Drives
-    /// both the opaque indirect meta and the water pass so they fade in
-    /// together.
     fn section_visibility(nearby: bool, sec: &SectionAlloc, now: crate::clock::Instant) -> f32 {
         if nearby {
             return 1.0;
@@ -1299,21 +1135,6 @@ impl ChunkBufferStore {
         (elapsed_ms / FADE_DURATION_MS).min(1.0)
     }
 
-    /// Draw the translucent water of every section that survives a CPU frustum
-    /// cull. Reuses the shared vertex/index buffers (water indices live right
-    /// after the opaque ones in each section's slice); the caller binds the
-    /// blended water pipeline first. Not GPU-culled — water sections are a
-    /// small subset, so a per-section draw is cheap and keeps the opaque
-    /// indirect path untouched.
-    ///
-    /// `anchor` must be the same `Camera::anchor()` this frame's
-    /// `CameraUniform` was built with: the push-constant origins are rebased
-    /// against it and the shader adds back `camera_pos` (the eye's offset
-    /// from that anchor).
-    ///
-    /// TODO: water isn't depth-sorted, so overlapping translucent surfaces
-    /// (oceans at grazing angles, water seen through water) can blend out of
-    /// order.
     pub fn draw_water(
         &self,
         pass: &rhi::backend::RenderPassEncoder,
@@ -1328,6 +1149,8 @@ impl ChunkBufferStore {
         pass.set_vertex_buffer(0, self.vertex_buffer.handle());
         pass.set_index_buffer(self.index_buffer.handle());
 
+        let gpu_cull = self.compute_pipeline.is_some();
+        let vertex_size = self.format.vertex_size();
         let now = crate::clock::Instant::now();
         for (pos, alloc) in self.chunks.iter() {
             let col_vis = self.chunk_visibility.get(pos).copied().unwrap_or(u32::MAX);
@@ -1347,11 +1170,21 @@ impl ChunkBufferStore {
                     0,
                     bytemuck::bytes_of(&origin_fade),
                 );
+                let base_vertex = if gpu_cull {
+                    sec.vertex_offset
+                } else {
+                    pass.set_vertex_buffer_at(
+                        0,
+                        self.vertex_buffer.handle(),
+                        sec.vertex_offset as u64 * vertex_size,
+                    );
+                    0
+                };
                 pass.draw_indexed(
                     sec.water_index_count,
                     1,
                     sec.water_first_index,
-                    sec.vertex_offset,
+                    base_vertex,
                     0,
                 );
             }
@@ -1368,13 +1201,18 @@ impl ChunkBufferStore {
         util::destroy_buffers(device, &mut self.count_readbacks);
         std::mem::take(&mut self.staging_buffer).destroy(device);
 
-        self.compute_pipeline.destroy(device);
-        self.compute_layout.destroy(device);
-        self.cull_layout.destroy(device);
+        if let Some(pipeline) = &self.compute_pipeline {
+            pipeline.destroy(device);
+        }
+        if let Some(layout) = &self.compute_layout {
+            layout.destroy(device);
+        }
+        if let Some(layout) = &self.cull_layout {
+            layout.destroy(device);
+        }
     }
 }
 
-/// A chunk pool: device-local behind the staging buffer, or host-visible.
 fn create_pool(
     device: &rhi::backend::Device,
     use_staging: bool,
@@ -1395,42 +1233,45 @@ fn create_pool(
     }
 }
 
-/// Which view's draw lists [`ChunkBufferStore::draw_indirect`] draws.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Camera,
-    /// A shader pack's shadow pass.
     Shadow,
 }
 
-/// One view's sections and, per frame slot, the cull's frustum and the draw
-/// lists it writes.
 struct DrawList {
     meta: Vec<ChunkMeta>,
-    /// Frame slots still needing the latest `meta` uploaded. Set to
-    /// `MAX_FRAMES_IN_FLIGHT` whenever the draw list changes, decremented per
-    /// frame; at steady state the per-frame meta copy stops.
     upload_pending: u32,
     cull_sets: Vec<rhi::backend::BindGroup>,
     meta_buffers: Vec<rhi::backend::Buffer>,
     frustum_buffers: Vec<rhi::backend::Buffer>,
-    // Solid (no-discard, early-Z) draw list, written by the cull shader.
     indirect_buffers: Vec<rhi::backend::Buffer>,
     count_buffers: Vec<rhi::backend::Buffer>,
-    // Cutout (discard) draw list. Same sections, the back of each section's
-    // index slice; drawn in a second pass after solid lays down depth.
     indirect_cutout_buffers: Vec<rhi::backend::Buffer>,
     count_cutout_buffers: Vec<rhi::backend::Buffer>,
+    visible_solid: Vec<VisibleDraw>,
+    visible_cutout: Vec<VisibleDraw>,
+}
+
+struct VisibleDraw {
+    meta_index: u32,
+    first_index: u32,
+    index_count: u32,
+    vertex_offset: i32,
 }
 
 impl DrawList {
     fn new(
         device: &rhi::backend::Device,
-        layout: rhi::backend::BindGroupLayout,
+        layout: Option<rhi::backend::BindGroupLayout>,
         meta_size: u64,
         indirect_size: u64,
     ) -> Self {
+        let gpu = layout.is_some();
         let count = |name: &str| {
+            if !gpu {
+                return Vec::new();
+            }
             util::create_per_frame_host_buffers(
                 device,
                 COUNT_SIZE,
@@ -1443,32 +1284,86 @@ impl DrawList {
         let mut this = Self {
             meta: Vec::new(),
             upload_pending: 0,
-            cull_sets: vec![rhi::backend::BindGroup::default(); MAX_FRAMES_IN_FLIGHT],
+            cull_sets: if gpu {
+                vec![rhi::backend::BindGroup::default(); MAX_FRAMES_IN_FLIGHT]
+            } else {
+                Vec::new()
+            },
             meta_buffers: Vec::new(),
-            frustum_buffers: util::create_per_frame_host_buffers(
-                device,
-                FRUSTUM_SIZE,
-                rhi::BufferUsages::UNIFORM,
-                "frustum_ubo",
-            ),
+            frustum_buffers: if gpu {
+                util::create_per_frame_host_buffers(
+                    device,
+                    FRUSTUM_SIZE,
+                    rhi::BufferUsages::UNIFORM,
+                    "frustum_ubo",
+                )
+            } else {
+                Vec::new()
+            },
             indirect_buffers: Vec::new(),
             count_buffers: count("draw_count"),
             indirect_cutout_buffers: Vec::new(),
             count_cutout_buffers: count("draw_count_cutout"),
+            visible_solid: Vec::new(),
+            visible_cutout: Vec::new(),
         };
         this.regrow(device, layout, meta_size, indirect_size);
         this
     }
 
-    /// Remakes the per-frame meta and indirect buffers at these sizes and
-    /// points each frame's cull group at its buffers.
+    fn cull_on_cpu(&mut self, frame: usize, frustum: &[[f32; 4]; 6], eye: DVec3) {
+        if self.upload_pending > 0 {
+            self.meta_buffers[frame].write(bytemuck::cast_slice(&self.meta));
+            self.upload_pending -= 1;
+        }
+        self.visible_solid.clear();
+        self.visible_cutout.clear();
+        for (index, meta) in self.meta.iter().enumerate() {
+            if meta.index_count == 0 {
+                continue;
+            }
+            let aabb = ChunkAABB {
+                min: meta.aabb_min,
+                max: meta.aabb_max,
+            };
+            if !aabb_in_frustum(&aabb, meta.origin, frustum, eye) {
+                continue;
+            }
+            let draw = |first_index: u32, index_count: u32| VisibleDraw {
+                meta_index: index as u32,
+                first_index,
+                index_count,
+                vertex_offset: meta.vertex_offset,
+            };
+            let solid = meta.solid_index_count;
+            if solid > 0 {
+                self.visible_solid.push(draw(meta.first_index, solid));
+            }
+            if meta.index_count > solid {
+                self.visible_cutout
+                    .push(draw(meta.first_index + solid, meta.index_count - solid));
+            }
+        }
+    }
+
     fn regrow(
         &mut self,
         device: &rhi::backend::Device,
-        layout: rhi::backend::BindGroupLayout,
+        layout: Option<rhi::backend::BindGroupLayout>,
         meta_size: u64,
         indirect_size: u64,
     ) {
+        let Some(layout) = layout else {
+            util::destroy_buffers(device, &mut self.meta_buffers);
+            self.meta_buffers = util::create_per_frame_host_buffers(
+                device,
+                meta_size,
+                rhi::BufferUsages::VERTEX,
+                "chunk_meta",
+            );
+            self.upload_pending = MAX_FRAMES_IN_FLIGHT as u32;
+            return;
+        };
         for buffers in [
             &mut self.meta_buffers,
             &mut self.indirect_buffers,
@@ -1509,10 +1404,6 @@ impl DrawList {
         }
     }
 
-    /// Records the cull of `meta` against `frustum` into this frame slot's
-    /// draw lists, uploading `meta` first if the slot hasn't seen it.
-    /// `zero_indirect`: without drawIndirectCount the whole indirect buffer
-    /// is drawn, so slots the cull leaves unfilled must read as no-op draws.
     #[allow(clippy::too_many_arguments)]
     fn cull(
         &mut self,
@@ -1588,7 +1479,6 @@ mod tests {
             far,
             ChunkAlloc::synthetic(far, -64, [4], now - Duration::from_millis(500)),
         );
-        // Section 5 of the near column is occluded.
         let vis = HashMap::from([(near, 1u32 << 4)]);
         let eye = DVec3::new(8.0, 8.0, 8.0);
 

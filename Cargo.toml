@@ -17,7 +17,7 @@ members = [
     "tools/protogen"
 ]
 # Steel is its own workspace; pomme-singleplayer reaches into it by path.
-exclude = ["third_party/SteelMC"]
+exclude = ["third_party/SteelMC", "third_party/vendor/saa"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

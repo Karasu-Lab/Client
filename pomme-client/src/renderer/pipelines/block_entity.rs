@@ -18,14 +18,8 @@ pub struct BlockEntityRenderInfo {
     pub pos: BlockPos,
     pub kind: BlockEntityKind,
     pub yaw: f32,
-    /// Texture-variant index; the model index is `variant % models.len()`, so
-    /// chest variants (material-major, [single, left, right] per material)
-    /// fold to their type's model and single-model kinds always use model 0.
     pub variant: u32,
-    /// Lid openness for chest/shulker, 0.0=closed to 1.0=open. Raw (un-eased);
-    /// the pipeline applies a cubic ease at draw time.
     pub lid_open: f32,
-    /// Vanilla `BlockEntityRenderState.lightCoords`.
     pub light: LightLevels,
 }
 
@@ -35,8 +29,6 @@ struct TextureSlot {
 }
 
 struct KindEntry {
-    /// Model variants sharing one vertex buffer; their `part_ranges` are
-    /// rebased to be buffer-absolute at build time.
     models: Vec<BakedEntityModel>,
     vertex_buffer: rhi::backend::Buffer,
     textures: Vec<TextureSlot>,
@@ -49,8 +41,6 @@ struct KindDef {
     tex_size: u32,
 }
 
-/// 16 dye colors in vanilla `DyeColor` ordinal order. Used both to build
-/// texture-variant arrays and to map block names back to variant indices.
 const DYE_COLOR_NAMES: [&str; 16] = [
     "white",
     "orange",
@@ -70,8 +60,6 @@ const DYE_COLOR_NAMES: [&str; 16] = [
     "black",
 ];
 
-/// Wood/material variants for sign textures, in the order they appear in
-/// `SIGN_TEXTURES`.
 const SIGN_WOOD_NAMES: [&str; 12] = [
     "oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "pale_oak",
     "bamboo", "crimson", "warped",
@@ -92,12 +80,6 @@ const SIGN_TEXTURES: &[&[&str]] = &[
     &["minecraft/textures/block/warped_sign.png"],
 ];
 
-/// Chest textures mirroring vanilla `Sheets.chooseSprite`: material-major with
-/// [single, double-left, double-right] per material, so
-/// `variant = material * 3 + type` and `variant % 3` is the model index.
-/// Material order matches [`variant_for_block`]. Christmas only reskins the
-/// normal material (vanilla `getChestMaterial` checks copper first), so copper
-/// stages keep their look.
 macro_rules! chest_textures {
     ($base:literal, copper) => {
         chest_textures!($base, "copper", "copper_exposed", "copper_weathered", "copper_oxidized")
@@ -143,9 +125,6 @@ fn name_index(table: &[&str], name: &str) -> Option<u32> {
     table.iter().position(|&n| n == name).map(|i| i as u32)
 }
 
-/// Build a [`PartAnim`] applying chest/shulker lid motion. `openness` is the
-/// raw [0, 1] value; vanilla applies cubic easing so the lid decelerates as it
-/// approaches the open or closed extreme.
 fn lid_anim(kind: BlockEntityKind, openness: f32) -> PartAnim {
     if openness <= 0.0 {
         return PartAnim::default();
@@ -154,7 +133,6 @@ fn lid_anim(kind: BlockEntityKind, openness: f32) -> PartAnim {
     let eased = 1.0 - inv * inv * inv;
     match kind {
         BlockEntityKind::Chest | BlockEntityKind::TrappedChest | BlockEntityKind::EnderChest => {
-            // Parts are [bottom, lid, lock]; lid and lock swing together.
             let rot = glam::Vec3::new(-eased * std::f32::consts::FRAC_PI_2, 0.0, 0.0);
             PartAnim {
                 rotation: vec![(1, rot), (2, rot)],
@@ -176,15 +154,12 @@ pub fn variant_for_block(
     props: &crate::world::block::PropMap,
 ) -> u32 {
     match kind {
-        // Ender chests have no `type` property and fall through to 0.
         BlockEntityKind::Chest | BlockEntityKind::TrappedChest => {
             let ty = match props.get("type") {
                 Some("left") => 1,
                 Some("right") => 2,
                 _ => 0,
             };
-            // Copper weathering stage selects the material row (waxing keeps
-            // the stage's texture); trapped chests have no copper form.
             let material = match name.strip_prefix("waxed_").unwrap_or(name) {
                 "copper_chest" => 1,
                 "exposed_copper_chest" => 2,
@@ -207,9 +182,6 @@ pub fn variant_for_block(
     }
 }
 
-/// XZ offset from a double-chest half to its partner. `type=left` connects at
-/// `facing.getClockWise()`, `type=right` at `getCounterClockWise()` (vanilla
-/// `ChestBlock.getConnectedDirection`).
 pub fn chest_partner_offset(facing: &str, chest_type: &str) -> Option<(i32, i32)> {
     let clockwise = match facing {
         "north" => (1, 0),
@@ -225,8 +197,6 @@ pub fn chest_partner_offset(facing: &str, chest_type: &str) -> Option<(i32, i32)
     }
 }
 
-/// Values mirror vanilla's `direction.toYRot()`; the draw code applies
-/// `rotY(180 - yaw)` for y-down models and `rotY(-yaw)` for y-up ones.
 pub fn yaw_for_block(kind: BlockEntityKind, props: &crate::world::block::PropMap) -> f32 {
     match kind {
         BlockEntityKind::Chest
@@ -239,9 +209,6 @@ pub fn yaw_for_block(kind: BlockEntityKind, props: &crate::world::block::PropMap
             Some("east") => 270.0,
             _ => 0.0,
         },
-        // TODO: wall signs have no `rotation` (they use `facing`) and vanilla
-        // renders them with a postless model offset against the wall; they
-        // currently fall back to the standing model facing south.
         BlockEntityKind::Sign => props
             .get("rotation")
             .and_then(|s| s.parse::<f32>().ok())
@@ -251,19 +218,14 @@ pub fn yaw_for_block(kind: BlockEntityKind, props: &crate::world::block::PropMap
     }
 }
 
-/// Vanilla swaps chest textures for the christmas set on Dec 24-26 (local
-/// date), decided once at renderer construction. The check runs before the
-/// trapped-chest one there, so trapped chests turn christmas too; ender and
-/// copper chests never do.
 fn is_christmas() -> bool {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let now = crate::clock::now_local();
     now.month() == time::Month::December && (24..=26).contains(&now.day())
 }
 
 fn kind_definitions() -> Vec<KindDef> {
     let xmas = is_christmas();
     let chest_models = block_entity_model::bake_chest_models();
-    // Ender chests have no double form; only the single model applies.
     let ender_models = vec![chest_models[0].clone()];
     vec![
         KindDef {
@@ -314,10 +276,7 @@ pub struct BlockEntityPipeline {
     texture_layout: rhi::backend::BindGroupLayout,
     camera_sets: Vec<rhi::backend::BindGroup>,
     camera_buffers: Vec<rhi::backend::Buffer>,
-    /// The shared [`Lightmap`]'s group, set 2.
     lightmap_set: rhi::backend::BindGroup,
-    /// A shader pack's `gbuffers_block`, drawn with while set; the texture
-    /// binds at set 3.
     pub pack_binding: Option<super::shaderpack::PackBinding>,
     texture_sampler: rhi::backend::Sampler,
     entries: HashMap<BlockEntityKind, KindEntry>,
@@ -458,14 +417,10 @@ impl BlockEntityPipeline {
             ) - anchor)
                 .as_vec3();
             let model_mat = match model.convention {
-                // With the 180 yaw offset and the convention's baked-in flip
-                // this reproduces vanilla's block-entity `scale(1,-1,-1)`.
                 ModelConvention::EntityYDown => {
                     glam::Mat4::from_translation(block_center)
                         * glam::Mat4::from_rotation_y((180.0f32 - info.yaw).to_radians())
                 }
-                // Vanilla `ChestRenderer`: rotate by -facing.toYRot() about the
-                // block center; coords are relative to the block's min corner.
                 ModelConvention::BlockYUp => {
                     glam::Mat4::from_translation(block_center)
                         * glam::Mat4::from_rotation_y((-info.yaw).to_radians())
@@ -481,8 +436,6 @@ impl BlockEntityPipeline {
                 }
                 let part_mat = model_mat * part_transforms[i];
                 let cols = part_mat.to_cols_array();
-                // Shared entity shader push block: mat, tint, overlay_color, uv_params.
-                // Block entities are opaque with no hurt flash or UV scroll.
                 let no_overlay = [0.0f32, 0.0, 0.0, 1.0];
                 let uv_params = [0.0f32, 0.0, ENTITY_ALPHA_CUTOFF, info.light.lane()];
                 let mut bytes = [0u8; 112];

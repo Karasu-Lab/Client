@@ -1,4 +1,3 @@
-//! The Vulkan backend of [`super`].
 
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
@@ -20,8 +19,6 @@ use super::{
 };
 use crate::renderer::MAX_FRAMES_IN_FLIGHT;
 
-/// A Vulkan object its maker owns and frees with `destroy`. The default is an
-/// empty placeholder.
 macro_rules! handle_type {
     ($name:ident($raw:ty), $destroy:ident) => {
         #[repr(transparent)]
@@ -43,7 +40,6 @@ handle_type!(
 handle_type!(PipelineLayout(vk::PipelineLayout), destroy_pipeline_layout);
 handle_type!(Sampler(vk::Sampler), destroy_sampler);
 
-/// Locks `mutex`, carrying on past a panic in an earlier holder.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -56,9 +52,6 @@ pub use swapchain::Swapchain;
 
 pub type Error = vk::Error;
 
-/// The GPU and what every resource is made with: its memory allocator, the
-/// queue and command pool one-off uploads go through, and the render pass
-/// cache. WebGPU's `GPUDevice` with its queue.
 pub struct Device {
     raw: vk::Device,
     allocator: ManuallyDrop<Mutex<Allocator>>,
@@ -66,12 +59,9 @@ pub struct Device {
     command_pool: vk::CommandPool,
     targets: RenderTargets,
     bind_groups: BindGroupPools,
-    /// The largest heap of GPU-local memory, in bytes.
     pub device_local_bytes: u64,
-    /// A GPU with memory of its own, which uploads reach through a copy.
     pub discrete: bool,
     pub max_texture_array_layers: u32,
-    /// The widest 2D texture, in texels.
     pub max_texture_size: u32,
     depth_clamp: bool,
 }
@@ -114,16 +104,10 @@ impl Device {
         let _ = self.raw.wait_idle();
     }
 
-    /// Drops the framebuffers holding any of `textures`, made outside the RHI
-    /// and about to be destroyed. [`Texture::destroy`] does this itself.
     pub fn forget_targets(&self, textures: &[TextureHandle]) {
         self.targets.forget(self, textures);
     }
 
-    /// Records commands and queues them after all earlier work. Once it
-    /// returns, the resources they use may be rewritten or destroyed through
-    /// the RHI; their results reach the CPU only through a readback buffer.
-    /// Vulkan waits on a fence for this, where WebGPU's queue order gives it.
     pub fn submit(&self, record: impl FnOnce(&CommandEncoder)) {
         self.try_submit(record)
             .unwrap_or_else(|error| panic!("{error}"));
@@ -175,7 +159,6 @@ impl Device {
         result
     }
 
-    /// A bind group of `layout` holding `bindings`.
     pub fn create_bind_group(
         &self,
         layout: BindGroupLayout,
@@ -190,11 +173,6 @@ impl Device {
         lock(&self.allocator)
     }
 
-    /// Frees what the device made, then the device, once the GPU is idle.
-    ///
-    /// # Safety
-    /// Nothing may use the device afterwards, and every resource made from
-    /// it must already be destroyed.
     pub unsafe fn destroy(&mut self) {
         let _ = self.raw.wait_idle();
         self.targets.destroy(self);
@@ -205,14 +183,10 @@ impl Device {
     }
 }
 
-/// What commands and bindings take a [`Buffer`] as: a small copy, valid until
-/// the buffer is destroyed.
 #[repr(transparent)]
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct BufferHandle(vk::Buffer);
 
-/// A buffer and the memory it owns. The default is an empty placeholder, for
-/// `std::mem::take` when an owner frees a buffer it holds by value.
 #[derive(Default)]
 pub struct Buffer {
     raw: vk::Buffer,
@@ -282,7 +256,6 @@ impl Buffer {
         Ok(buffer)
     }
 
-    /// A host buffer holding `data`.
     pub fn with_data(device: &Device, label: &str, data: &[u8], usage: BufferUsages) -> Self {
         Self::try_with_data(device, label, data, usage).unwrap_or_else(|error| panic!("{error}"))
     }
@@ -308,23 +281,18 @@ impl Buffer {
         BufferHandle(self.raw)
     }
 
-    /// Reads a [`MemoryLocation::Readback`] buffer; the caller has already
-    /// waited on the frame that wrote it.
     pub fn read<R>(&mut self, read: impl FnOnce(&[u8]) -> R) -> R {
         read(self.mapped_mut())
     }
 
-    /// Writes `data` at the start of a [`MemoryLocation::Host`] buffer.
     pub fn write(&mut self, data: &[u8]) {
         self.write_at(0, data);
     }
 
-    /// Writes `data` at byte `offset` of a [`MemoryLocation::Host`] buffer.
     pub fn write_at(&mut self, offset: usize, data: &[u8]) {
         self.mapped_mut()[offset..offset + data.len()].copy_from_slice(data);
     }
 
-    /// Zeroes a whole host-mapped buffer.
     pub fn zero(&mut self) {
         self.mapped_mut().fill(0);
     }
@@ -341,7 +309,6 @@ impl Buffer {
     }
 }
 
-/// Memory for a buffer (`linear`) or an image.
 fn allocate(
     device: &Device,
     label: &str,
@@ -361,7 +328,6 @@ fn allocate(
         .map_err(|error| format!("failed to allocate memory for {label}: {error}"))
 }
 
-/// The union of the flags in `table` whose bit `has`.
 fn union_flags<B, F: BitOr<Output = F>>(
     empty: F,
     table: impl IntoIterator<Item = (B, F)>,
@@ -389,8 +355,6 @@ fn buffer_usage_flags(usage: BufferUsages) -> vk::BufferUsageFlags {
     )
 }
 
-/// A texture, its view of every level and layer, and the memory it owns.
-/// The default is an empty placeholder, like [`Buffer`]'s.
 #[derive(Default)]
 pub struct Texture {
     raw: vk::Image,
@@ -490,7 +454,6 @@ impl Texture {
         }
     }
 
-    /// Frees the texture and any cached framebuffers holding it.
     pub fn destroy(self, device: &Device) {
         device.targets.forget(device, &[self.handle()]);
         device.raw.destroy_image_view(self.view, None);
@@ -499,9 +462,6 @@ impl Texture {
     }
 }
 
-/// What barriers, copies, bindings and attachments take a texture as: its
-/// image and its view of every level and layer, valid until their owner
-/// destroys them.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct TextureHandle {
     image: vk::Image,
@@ -509,7 +469,6 @@ pub struct TextureHandle {
 }
 
 impl TextureHandle {
-    /// A texture made outside the RHI, such as a swapchain image.
     pub fn new(image: vk::Image, view: vk::ImageView) -> Self {
         Self { image, view }
     }
@@ -533,7 +492,6 @@ pub fn texture_format(format: TextureFormat) -> vk::Format {
     }
 }
 
-/// The base level and layer of `format`'s aspect.
 fn subresource_range(format: TextureFormat) -> vk::ImageSubresourceRange {
     match format {
         TextureFormat::Depth32Float => DEPTH_SUBRESOURCE_RANGE,
@@ -600,8 +558,6 @@ pub fn try_create_sampler(device: &Device, desc: &SamplerDesc) -> Result<Sampler
         .map_err(|error| format!("failed to create sampler: {error}"))
 }
 
-/// What one binding of a bind group points at. Views must be in
-/// `ShaderReadOnlyOptimal` layout.
 #[derive(Clone, Copy)]
 pub enum BindingResource {
     UniformBuffer { buffer: BufferHandle, size: u64 },
@@ -635,7 +591,6 @@ impl BindingResource {
     }
 }
 
-/// Points each listed binding of `group` at its resource.
 fn write_bind_group(
     device: &Device,
     group: vk::DescriptorSet,
@@ -646,8 +601,6 @@ fn write_bind_group(
         image_view,
         image_layout: vk::ImageLayout::ShaderReadOnlyOptimal,
     };
-    // Every write gets both infos so their addresses are fixed before the
-    // writes point at them.
     let infos: Vec<_> = bindings
         .iter()
         .map(|&(_, resource)| match resource {
@@ -741,9 +694,6 @@ pub fn create_pipeline_layout(
     )
 }
 
-/// A pipeline and the layout its bind groups and push constants follow, as
-/// WebGPU's pipelines keep theirs. Layouts can be shared, so whoever made one
-/// destroys it. The default is an empty placeholder.
 macro_rules! pipeline_type {
     ($name:ident) => {
         #[derive(Clone, Copy, Default)]
@@ -806,8 +756,6 @@ pub fn create_render_pipeline(
         .unwrap_or_else(|e| panic!("failed to create {} pipeline: {e}", desc.label))
 }
 
-/// [`create_render_pipeline`] for shaders that may not be valid, such as a
-/// shader pack's.
 pub fn try_create_render_pipeline(
     device: &Device,
     targets: PipelineTargets,
@@ -924,8 +872,6 @@ pub fn try_create_render_pipeline(
         None => vk::PipelineDepthStencilStateCreateInfo::default(),
     };
 
-    // Vulkan doesn't guarantee blending 32-bit float targets: they're
-    // written unblended.
     let blend_attachments: Vec<_> = targets
         .color
         .into_iter()
@@ -986,7 +932,6 @@ pub fn try_create_render_pipeline(
 
 pub type TextureTransition = super::TextureTransition<TextureHandle>;
 
-/// What the Vulkan backend knows of a [`TextureUse`], which the RHI defines.
 trait TextureUseExt: Sized {
     fn layout(self) -> vk::ImageLayout;
     fn is_depth(self) -> bool;
@@ -1015,11 +960,9 @@ impl TextureUseExt for TextureUse {
         )
     }
 
-    /// The access and stage that must finish before leaving this use.
     fn src(self) -> (vk::AccessFlags, vk::PipelineStageFlags) {
         match self {
             Self::Undefined => (vk::AccessFlags::empty(), vk::PipelineStageFlags::TopOfPipe),
-            // Presented images were last written as the pass's color target.
             Self::Present => (
                 vk::AccessFlags::ColorAttachmentWrite,
                 vk::PipelineStageFlags::ColorAttachmentOutput,
@@ -1028,7 +971,6 @@ impl TextureUseExt for TextureUse {
         }
     }
 
-    /// The access and stage that wait on entering this use.
     fn dst(self) -> (vk::AccessFlags, vk::PipelineStageFlags) {
         match self {
             Self::Undefined => unreachable!("textures can't move to Undefined"),
@@ -1062,7 +1004,6 @@ impl TextureUseExt for TextureUse {
     }
 }
 
-/// What the Vulkan backend knows of a [`BufferUse`].
 trait BufferUseExt: Sized {
     fn masks(self) -> (vk::AccessFlags, vk::PipelineStageFlags);
 }
@@ -1091,20 +1032,16 @@ impl BufferUseExt for BufferUse {
     }
 }
 
-/// Records transfers, barriers and passes into a command buffer, in the
-/// shape of WebGPU's `GPUCommandEncoder`.
 #[derive(Clone, Copy)]
 pub struct CommandEncoder {
     cmd: vk::CommandBuffer,
 }
 
 impl CommandEncoder {
-    /// Wraps `cmd`, which must already be recording.
     pub fn new(cmd: vk::CommandBuffer) -> Self {
         Self { cmd }
     }
 
-    /// One barrier for all of `transitions`.
     pub fn transition_textures(&self, transitions: &[TextureTransition]) {
         let mut src_stages = vk::PipelineStageFlags::empty();
         let mut dst_stages = vk::PipelineStageFlags::empty();
@@ -1143,7 +1080,6 @@ impl CommandEncoder {
         );
     }
 
-    /// Makes every buffer write of `from` visible to `to`.
     pub fn transition_buffers(&self, from: BufferUse, to: BufferUse) {
         let (src_access_mask, src_stage) = from.masks();
         let (dst_access_mask, dst_stage) = to.masks();
@@ -1173,7 +1109,6 @@ impl CommandEncoder {
         self.cmd.copy_buffer(src.0, dst.0, &regions);
     }
 
-    /// Copies into `image`, which must be in [`TextureUse::CopyDst`].
     pub fn copy_buffer_to_texture(
         &self,
         buffer: BufferHandle,
@@ -1188,7 +1123,6 @@ impl CommandEncoder {
         );
     }
 
-    /// Copies out of `image`, which must be in [`TextureUse::CopySrc`].
     pub fn copy_texture_to_buffer(
         &self,
         image: TextureHandle,
@@ -1203,8 +1137,6 @@ impl CommandEncoder {
         );
     }
 
-    /// `src` must be in [`TextureUse::CopySrc`] and `dst` in
-    /// [`TextureUse::CopyDst`].
     pub fn blit(&self, src: TextureHandle, dst: TextureHandle, blit: &Blit) {
         let level = |mip_level| vk::ImageSubresourceLayers {
             aspect_mask: vk::ImageAspectFlags::Color,
@@ -1237,7 +1169,6 @@ impl CommandEncoder {
         );
     }
 
-    /// Clears `range` of `image` ([`TextureUse::CopyDst`]) to `color`.
     pub fn clear_texture(&self, image: TextureHandle, range: TextureRange, color: [f32; 4]) {
         self.cmd.clear_color_image(
             image.image,
@@ -1247,7 +1178,6 @@ impl CommandEncoder {
         );
     }
 
-    /// Clears a depth `image` ([`TextureUse::DepthCopyDst`]) to `depth`.
     pub fn clear_depth(&self, image: TextureHandle, depth: f32) {
         self.cmd.clear_depth_stencil_image(
             image.image,
@@ -1257,8 +1187,6 @@ impl CommandEncoder {
         );
     }
 
-    /// Copies `extent` of a depth texture `src` ([`TextureUse::DepthCopySrc`])
-    /// into `dst` ([`TextureUse::DepthCopyDst`]).
     pub fn copy_depth(&self, src: TextureHandle, dst: TextureHandle, extent: Extent) {
         let layers = vk::ImageSubresourceLayers {
             aspect_mask: vk::ImageAspectFlags::Depth,
@@ -1285,8 +1213,6 @@ impl CommandEncoder {
         );
     }
 
-    /// Uploads `copies` of `staging` into `range` of a fresh `image`, leaving
-    /// it ready to sample.
     pub fn upload_texture(
         &self,
         staging: BufferHandle,
@@ -1305,8 +1231,6 @@ impl CommandEncoder {
         self.transition_textures(&[transition(TextureUse::CopyDst, TextureUse::ShaderRead)]);
     }
 
-    /// Begins the pass `desc` describes, with the viewport and scissor
-    /// covering its extent, as WebGPU starts every pass.
     pub fn begin_render_pass(&self, device: &Device, desc: &RenderPassDesc) -> RenderPassEncoder {
         let (render_pass, framebuffer) = device.targets.get(&device.raw, desc);
         let mut clear_values: Vec<_> = pass_colors(desc)
@@ -1339,7 +1263,6 @@ impl CommandEncoder {
         )
     }
 
-    /// Dispatches `groups` workgroups of `pipeline` with `group` bound at 0.
     pub fn dispatch(&self, pipeline: &ComputePipeline, group: BindGroup, groups: [u32; 3]) {
         self.cmd
             .bind_pipeline(vk::PipelineBindPoint::Compute, pipeline.raw);
@@ -1381,8 +1304,6 @@ fn buffer_image_copies(copies: &[TexelCopy]) -> Vec<vk::BufferImageCopy> {
         .collect()
 }
 
-/// Records one render pass, in the shape of WebGPU's `GPURenderPassEncoder`:
-/// bind groups and push constants go to the layout of the last pipeline set.
 pub struct RenderPassEncoder {
     cmd: vk::CommandBuffer,
     layout: vk::PipelineLayout,
@@ -1425,7 +1346,6 @@ impl RenderPassEncoder {
         self.layout = pipeline.layout.0;
     }
 
-    /// Binds `groups` at consecutive indices from `first`.
     pub fn set_bind_groups(&self, first: u32, groups: &[BindGroup]) {
         debug_assert!(self.layout != vk::PipelineLayout::null(), "no pipeline set");
         let mut raw = [vk::DescriptorSet::null(); MAX_BIND_GROUPS];
@@ -1452,16 +1372,18 @@ impl RenderPassEncoder {
     }
 
     pub fn set_vertex_buffer(&self, slot: u32, buffer: BufferHandle) {
-        self.cmd.bind_vertex_buffers(slot, &[buffer.0], &[0]);
+        self.set_vertex_buffer_at(slot, buffer, 0);
     }
 
-    /// Binds `buffer` as `u32` indices.
+    pub fn set_vertex_buffer_at(&self, slot: u32, buffer: BufferHandle, offset: u64) {
+        self.cmd.bind_vertex_buffers(slot, &[buffer.0], &[offset]);
+    }
+
     pub fn set_index_buffer(&self, buffer: BufferHandle) {
         self.cmd
             .bind_index_buffer(buffer.0, 0, vk::IndexType::Uint32);
     }
 
-    /// A viewport over `rect` with the full 0..1 depth range.
     pub fn set_viewport(&self, rect: Rect) {
         self.cmd.set_viewport(
             0,
@@ -1508,7 +1430,6 @@ impl RenderPassEncoder {
         );
     }
 
-    /// `draw_count` indexed draws read from `buffer`, `stride` bytes apart.
     pub fn draw_indexed_indirect(
         &self,
         buffer: BufferHandle,
@@ -1520,8 +1441,6 @@ impl RenderPassEncoder {
             .draw_indexed_indirect(buffer.0, offset, draw_count, stride);
     }
 
-    /// Like [`Self::draw_indexed_indirect`], with the draw count read from
-    /// `count_buffer` and capped at `max_draws`.
     pub fn draw_indexed_indirect_count(
         &self,
         buffer: BufferHandle,
@@ -1533,7 +1452,6 @@ impl RenderPassEncoder {
             .draw_indexed_indirect_count(buffer.0, 0, count_buffer.0, 0, max_draws, stride);
     }
 
-    /// Clears depth to 1.0 inside `rect` mid-pass.
     pub fn clear_depth(&self, rect: Rect) {
         self.clear(
             vk::ImageAspectFlags::Depth,
@@ -1547,8 +1465,6 @@ impl RenderPassEncoder {
         );
     }
 
-    /// Clears the color target to `color` inside `rect` mid-pass (see
-    /// [`Self::clear_depth`]).
     pub fn clear_color(&self, rect: Rect, color: [f32; 4]) {
         self.clear(
             vk::ImageAspectFlags::Color,
@@ -1680,17 +1596,12 @@ fn color_blend_attachment(blend: Option<BlendState>) -> vk::PipelineColorBlendAt
     }
 }
 
-/// The frames in flight: each one's command buffer, the fence its reuse waits
-/// on, and the semaphores ordering it against the swapchain. WebGPU's canvas
-/// does all of this itself.
 pub struct Frames {
     command_buffers: [vk::CommandBuffer; MAX_FRAMES_IN_FLIGHT],
     image_available: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
     in_flight: [vk::Fence; MAX_FRAMES_IN_FLIGHT],
-    /// One per swapchain image, since an image's present waits on its own.
     render_finished: Vec<vk::Semaphore>,
     index: usize,
-    /// The last present's `VK_KHR_present_id`, counted per swapchain.
     present_id: u64,
 }
 
@@ -1729,12 +1640,10 @@ impl Frames {
         })
     }
 
-    /// The frame being recorded; per-frame resources are indexed by it.
     pub fn index(&self) -> usize {
         self.index
     }
 
-    /// Waits until the GPU has finished this frame's last use.
     pub fn wait(&self, device: &Device) -> Result<(), vk::Error> {
         device
             .raw
@@ -1761,7 +1670,6 @@ impl Frames {
         }
     }
 
-    /// Starts recording the frame, once its image is acquired.
     pub fn begin(&self, device: &Device) -> Result<CommandEncoder, vk::Error> {
         device.raw.reset_fences(&[self.in_flight[self.index]])?;
         let cmd = self.command_buffers[self.index];
@@ -1773,9 +1681,6 @@ impl Frames {
         Ok(CommandEncoder::new(cmd))
     }
 
-    /// Submits the frame and presents `image` once it's drawn, then moves on
-    /// to the next frame. With present wait, the present carries an id for
-    /// [`Self::pace`] to wait on.
     pub fn submit_and_present(
         &mut self,
         encoder: CommandEncoder,
@@ -1827,10 +1732,6 @@ impl Frames {
         Ok(presented)
     }
 
-    /// Blocks, for at most `timeout_ns`, until at most one frame is queued
-    /// for display: on the present before last with `present_wait`, else on
-    /// the previous frame's GPU work. False if the swapchain turned out to be
-    /// out of date.
     pub fn pace(&self, ctx: &Context, swapchain: &Swapchain, timeout_ns: u64) -> bool {
         let device = &ctx.device;
         if !ctx.present_wait {
@@ -1843,7 +1744,6 @@ impl Frames {
         if self.present_id < 2 {
             return true;
         }
-        // Timeouts and surface loss resurface at acquire/present.
         !matches!(
             device
                 .raw
@@ -1852,8 +1752,6 @@ impl Frames {
         )
     }
 
-    /// Replaces the per-image semaphores for a new swapchain, whose present
-    /// ids start over.
     pub fn resize(&mut self, device: &Device, image_count: usize) -> Result<(), vk::Error> {
         destroy_semaphores(&device.raw, self.render_finished.drain(..));
         self.render_finished = create_semaphores(&device.raw, image_count)?;
@@ -1861,7 +1759,6 @@ impl Frames {
         Ok(())
     }
 
-    /// Frees everything but the command buffers, which go with their pool.
     pub fn destroy(&mut self, device: &Device) {
         for &fence in &self.in_flight {
             device.raw.destroy_fence(fence, None);
@@ -1871,7 +1768,6 @@ impl Frames {
     }
 }
 
-/// The queues a frame is submitted and presented on.
 #[derive(Clone, Copy)]
 struct Queues {
     graphics: vk::Queue,
@@ -1894,10 +1790,6 @@ pub type ColorAttachment = super::ColorAttachment<TextureHandle, vk::Format>;
 pub type DepthAttachment = super::DepthAttachment<TextureHandle>;
 pub type RenderPassDesc = super::RenderPassDesc<TextureHandle, vk::Format>;
 
-/// The render passes and framebuffers Vulkan begins a pass with, each made
-/// the first time it's wanted: WebGPU begins one from its attachments alone.
-/// A pass leaves its attachments in their attachment layout, for a
-/// [`TextureTransition`] to move on.
 #[derive(Default)]
 pub struct RenderTargets(Mutex<TargetCache>);
 
@@ -1907,7 +1799,6 @@ struct TargetCache {
     framebuffers: HashMap<FramebufferKey, vk::Framebuffer>,
 }
 
-/// A pass's color targets: format, and whether it loads, in location order.
 type ColorKeys = [Option<(vk::Format, bool)>; MAX_COLOR_TARGETS];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -1926,7 +1817,6 @@ struct FramebufferKey {
     height: u32,
 }
 
-/// The color keys of `targets`, none loading.
 fn target_colors(targets: &PipelineTargets) -> ColorKeys {
     let mut colors = [None; MAX_COLOR_TARGETS];
     colors[0] = targets.color.map(|f| (f, false));
@@ -1936,15 +1826,11 @@ fn target_colors(targets: &PipelineTargets) -> ColorKeys {
     colors
 }
 
-/// The color attachments of `desc`, in location order.
 fn pass_colors(desc: &RenderPassDesc) -> impl Iterator<Item = &ColorAttachment> {
     desc.color.iter().chain(&desc.extra_colors)
 }
 
 impl RenderTargets {
-    /// A pass for making pipelines that draw into `color`, and a depth target
-    /// if `depth`: Vulkan makes a pipeline against a pass, and any with the
-    /// same formats will do.
     fn compatible_pass(&self, device: &Device, targets: &PipelineTargets) -> vk::RenderPass {
         self.cache().pass(
             &device.raw,
@@ -2111,7 +1997,6 @@ fn create_render_pass(device: &vk::Device, key: PassKey) -> vk::RenderPass {
         },
         ..Default::default()
     };
-    // After earlier writes to the targets, and earlier shader reads of them.
     let attachment_stages = vk::PipelineStageFlags::ColorAttachmentOutput
         | vk::PipelineStageFlags::EarlyFragmentTests
         | vk::PipelineStageFlags::LateFragmentTests;
@@ -2142,14 +2027,10 @@ fn create_render_pass(device: &vk::Device, key: PassKey) -> vk::RenderPass {
         .expect("failed to create render pass")
 }
 
-/// WebGPU's default, and the fewest Vulkan guarantees.
 const MAX_BIND_GROUPS: usize = 4;
 
-/// Bind groups per pool, and descriptors of each type.
 const GROUPS_PER_POOL: u32 = 256;
 
-/// A descriptor set written once, as a WebGPU `GPUBindGroup` can't change.
-/// The default is an empty placeholder.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct BindGroup {
     raw: vk::DescriptorSet,
@@ -2163,8 +2044,6 @@ impl BindGroup {
         }
     }
 
-    /// Points the group at new resources. A bind group can't change, so this
-    /// makes a new one and frees the old, which the GPU must be done with.
     pub fn replace(
         &mut self,
         device: &Device,
@@ -2175,8 +2054,6 @@ impl BindGroup {
     }
 }
 
-/// The pools bind groups come from, added as they fill: WebGPU makes bind
-/// groups from the device alone.
 #[derive(Default)]
 struct BindGroupPools(Mutex<Vec<vk::DescriptorPool>>);
 
@@ -2251,16 +2128,8 @@ fn try_shader_module(device: &Device, spirv: &[u8]) -> Result<vk::ShaderModule, 
         .map_err(|e| format!("failed to create shader module: {e:?}"))
 }
 
-// The code below is extracted from ash-rs/ash under the MIT license;
-// for the full license, see THIRD_PARTY_LICENSES.md
 
-/// Decode SPIR-V from bytes.
-///
-/// This function handles SPIR-V of arbitrary endianness gracefully, and returns
-/// correctly aligned storage.
 fn read_spv<R: io::Read + io::Seek>(x: &mut R) -> io::Result<Vec<u32>> {
-    // TODO use stream_len() once it is stabilized and remove the subsequent
-    // rewind() call
     let size = x.seek(io::SeekFrom::End(0))?;
     x.rewind()?;
     if size % 4 != 0 {
@@ -2273,9 +2142,6 @@ fn read_spv<R: io::Read + io::Seek>(x: &mut R) -> io::Result<Vec<u32>> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "input too long"));
     }
     let words = (size / 4) as usize;
-    // https://github.com/ash-rs/ash/issues/354:
-    // Zero-initialize the result to prevent read_exact from possibly
-    // reading uninitialized memory.
     let mut result = vec![0u32; words];
     x.read_exact(unsafe {
         slice::from_raw_parts_mut(result.as_mut_ptr().cast::<u8>(), words * 4)

@@ -1,9 +1,7 @@
 layout(set = 1, binding = 0) uniform texture2D atlas_texture;
 layout(set = 1, binding = 1) uniform sampler atlas_sampler;
-// Level-0 sprite rectangles `(x, y, width, height)` in atlas texels, indexed by
-// the vertex's sprite id; index 0 is the missing tile.
-layout(set = 1, binding = 2) readonly buffer SpriteRects {
-    uvec4 sprite_rects[];
+layout(set = 1, binding = 2) uniform SpriteRects {
+    uvec4 sprite_rects[4096];
 };
 
 vec4 sample_atlas_sprite(vec2 sprite_uv, uint sprite) {

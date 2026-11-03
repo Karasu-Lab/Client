@@ -3,6 +3,7 @@
 layout(set = 0, binding = 0) uniform Globals {
     float screen_w;
     float screen_h;
+    vec2 globals_padding;
 };
 
 layout(location = 0) in vec2 pos;

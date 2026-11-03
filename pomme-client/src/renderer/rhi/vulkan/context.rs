@@ -37,8 +37,6 @@ const VK_APP_NAME: &CStr = c"Pomme";
 const VK_APP_VERSION: u32 = vk::make_api_version(0, 0, 1, 0);
 const VK_ENGINE_NAME: &CStr = c"Pomme Engine";
 const VK_ENGINE_VERSION: u32 = vk::make_api_version(0, 0, 1, 0);
-// 1.2 is the highest feature set used; requesting higher makes injected layers
-// (e.g. VK_LAYER_OBS_HOOK, capped at 1.3) warn about a version mismatch.
 const VK_API_VERSION: u32 = vk::API_VERSION_1_2;
 
 #[cfg(debug_assertions)]
@@ -50,7 +48,6 @@ const DEVICE_EXTENSIONS: &[&CStr] = &[
     khr::portability_subset::NAME,
 ];
 
-/// Optional, enabled only when the device supports both.
 const PRESENT_WAIT_EXTENSIONS: &[&CStr] = &[khr::present_id::NAME, khr::present_wait::NAME];
 
 pub struct Context {
@@ -91,8 +88,6 @@ impl Context {
         #[allow(unused_mut)]
         let mut extensions = required.to_vec();
 
-        // The loader only lists MoltenVK, a portability implementation, when
-        // asked; iOS links MoltenVK directly, with no loader.
         #[cfg(target_os = "macos")]
         extensions.push(khr::portability_enumeration::NAME.as_ptr());
 
@@ -206,6 +201,7 @@ impl Context {
         let indirect_draw = IndirectDrawFeatures {
             count: supports_draw_indirect_count(&physical_device),
             multi_draw: physical_device.get_features().multi_draw_indirect == vk::TRUE,
+            gpu_cull: true,
         };
         tracing::info!("Indirect draws: {indirect_draw:?}");
         let enabled_features = vk::PhysicalDeviceFeatures {
@@ -250,7 +246,6 @@ impl Context {
             enabled_features: &enabled_features,
             ..Default::default()
         };
-        // Only a 1.2 device takes the struct, so it's chained only with the count.
         if indirect_draw.count {
             device_info = device_info.next(&mut vk12_features);
         }
@@ -304,13 +299,11 @@ impl Context {
         })
     }
 
-    /// Destroys the surface while Android has taken the native window away.
     pub fn destroy_surface(&mut self) {
         self.instance.destroy_surface(self.surface, None);
         self.surface = vk::SurfaceKHR::null();
     }
 
-    /// A surface for the native window Android hands back on resume.
     pub fn recreate_surface(&mut self, window: &Window) -> Result<(), ContextError> {
         self.surface = window_surface(&self.instance, window)?;
         Ok(())
@@ -352,7 +345,6 @@ fn pick_physical_device(
         .filter_map(|pd| {
             let (gf, pf) = find_queue_families(&pd, surface)?;
             let props = pd.get_properties();
-            // The chunk pass indexes each section's meta by `firstInstance`.
             let missing = if !supports_extensions(&pd, DEVICE_EXTENSIONS) {
                 Some("a required extension")
             } else if pd.get_features().draw_indirect_first_instance != vk::TRUE {
@@ -404,9 +396,6 @@ fn window_surface(
     window: &Window,
 ) -> Result<vk::SurfaceKHR, ContextError> {
     let window_handle = window.window_handle()?.as_raw();
-    // TODO: pyronyx 0.5.0's Android arm of `create_surface` doesn't compile
-    // (it passes the `c_void` window where `ANativeWindow` is expected), so
-    // Android builds its surface here, without pyronyx's `rwh_06` feature.
     #[cfg(target_os = "android")]
     {
         use pyronyx::khr::android_surface::AndroidSurfaceInstance;
@@ -419,16 +408,12 @@ fn window_surface(
         };
         Ok(instance.create_android_surface(&create_info, None)?)
     }
-    // pyronyx 0.5.0's `create_surface` has no UiKit arm; this is its AppKit
-    // one, on the view's Metal layer.
     #[cfg(target_os = "ios")]
     {
         use pyronyx::ext::metal_surface::MetalSurfaceInstance;
         let raw_window_handle::RawWindowHandle::UiKit(handle) = window_handle else {
             return Err(raw_window_handle::HandleError::NotSupported.into());
         };
-        // SAFETY: winit's view is a live `UIView` while the window exists,
-        // and `into_raw` hands the layer's ownership to the surface.
         let layer = unsafe { raw_window_metal::Layer::from_ui_view(handle.ui_view) };
         let create_info = vk::MetalSurfaceCreateInfoEXT {
             layer: layer.into_raw().as_ptr().cast(),

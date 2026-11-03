@@ -4,10 +4,6 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use super::{rhi, util};
 
-/// A capture whose GPU copy was recorded during a given frame; its host
-/// readback runs once that frame's fence signals (see
-/// `Renderer::render_frame`), so the staging buffer is provably done being
-/// written by then.
 struct PendingCapture {
     frame: usize,
     buffer: rhi::backend::Buffer,
@@ -17,14 +13,10 @@ struct PendingCapture {
     target: Option<PathBuf>,
 }
 
-/// Vanilla F2 (`Screenshot.grab`): copies the presented swapchain image into a
-/// host buffer, then encodes a PNG off-thread.
 pub struct ScreenshotCapture {
     armed: bool,
-    /// Where the armed capture goes instead of `screenshots/<timestamp>.png`.
     target: Option<PathBuf>,
     pending: Vec<PendingCapture>,
-    /// Encodes spawned but not yet drained from `result_rx`.
     in_flight: u32,
     game_dir: PathBuf,
     result_tx: Sender<Result<String, String>>,
@@ -45,34 +37,26 @@ impl ScreenshotCapture {
         }
     }
 
-    /// Arm a one-shot capture; recorded on the next presented frame.
     pub fn arm(&mut self) {
         self.armed = true;
     }
 
-    /// [`ScreenshotCapture::arm`], writing the PNG to `path`.
     #[cfg(feature = "test-harness")]
     pub fn arm_to(&mut self, path: PathBuf) {
         self.armed = true;
         self.target = Some(path);
     }
 
-    /// A capture is somewhere between armed and written to disk; drives the
-    /// HUD saving indicator.
     pub fn saving(&self) -> bool {
         self.armed || !self.pending.is_empty() || self.in_flight > 0
     }
 
-    /// Drain completed captures: `Ok(bare filename)` or `Err(message)`.
     pub fn drain_results(&mut self) -> Vec<Result<String, String>> {
         let results: Vec<_> = self.result_rx.try_iter().collect();
         self.in_flight = self.in_flight.saturating_sub(results.len() as u32);
         results
     }
 
-    /// If armed, record the image->buffer copy into `encoder` after the final
-    /// render pass, while the image is ready to present, and hand it back to
-    /// present after.
     pub fn record_if_armed(
         &mut self,
         device: &rhi::backend::Device,
@@ -112,8 +96,6 @@ impl ScreenshotCapture {
             rhi::TextureUse::CopySrc,
             rhi::TextureUse::Present,
         )]);
-        // Makes the copy visible to the mapped host read that follows the frame
-        // fence; without the HOST stage that read races the copy.
         encoder.transition_buffers(rhi::BufferUse::CopyDst, rhi::BufferUse::HostRead);
 
         self.pending.push(PendingCapture {
@@ -126,9 +108,6 @@ impl ScreenshotCapture {
         });
     }
 
-    /// Read back and encode any capture recorded for this frame index (its
-    /// fence has just signalled). Called from the per-frame fence wait, not
-    /// idle-wait.
     pub fn collect_ready(&mut self, frame: usize, device: &rhi::backend::Device) {
         let mut i = 0;
         while i < self.pending.len() {
@@ -164,8 +143,6 @@ impl ScreenshotCapture {
         });
     }
 
-    /// Free any buffers still awaiting readback (renderer teardown, after
-    /// idle).
     pub fn destroy(&mut self, device: &rhi::backend::Device) {
         for cap in self.pending.drain(..) {
             cap.buffer.destroy(device);
@@ -181,7 +158,6 @@ fn encode_and_write(
     dir: &Path,
     target: Option<PathBuf>,
 ) -> Result<String, String> {
-    // Vanilla screenshots are opaque RGB; drop alpha and reorder BGRA if needed.
     let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
     for px in pixels.as_chunks::<4>().0 {
         if bgra {
@@ -202,8 +178,6 @@ fn encode_and_write(
     Ok(name)
 }
 
-/// `Screenshot.getFile`: `<game dir>/screenshots/<timestamp>.png`; on
-/// collision the counter starts at 2 (`name.png`, `name_2.png`, ...).
 fn next_filename(dir: &Path) -> Result<(PathBuf, String), String> {
     pomme_vfs::create_dir_all(dir).map_err(|e| e.to_string())?;
 
@@ -224,7 +198,7 @@ fn next_filename(dir: &Path) -> Result<(PathBuf, String), String> {
 }
 
 fn timestamp() -> String {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let now = crate::clock::now_local();
     now.format(time::macros::format_description!(
         "[year]-[month]-[day]_[hour].[minute].[second]"
     ))
