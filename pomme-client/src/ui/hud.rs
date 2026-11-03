@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use azalea_inventory::ItemStack;
 use glam::DVec3;
 
-use super::common::{FONT_SIZE, TextWidthFn, WHITE, push_item_icon};
+use super::common::{FONT_SIZE, TextWidthFn, WHITE, push_debug_lines, push_item_icon};
 use crate::entity::wrap_degrees;
 use crate::mob_effect::ActiveMobEffects;
 use crate::position::BlockPos;
@@ -370,7 +370,7 @@ impl Scoreboard {
     }
 }
 
-pub struct DebugInfo<'a> {
+pub struct DebugInfo {
     pub fps: u32,
     pub position: DVec3,
     pub y_rot_deg: f32,
@@ -388,8 +388,7 @@ pub struct DebugInfo<'a> {
     /// the visibility gate is active; `None` while it falls back to meshing
     /// all.
     pub mesh_gate: Option<(u32, u32, u32)>,
-    pub gpu_name: &'a str,
-    pub vulkan_version: &'a str,
+    pub renderer: debugger::RendererInfo,
     pub screen_w: u32,
     pub screen_h: u32,
     pub timings: Option<FrameTimings>,
@@ -618,7 +617,7 @@ pub fn build_hud(
     effects: &ActiveMobEffects,
     boss_bars: &BossBarState,
     first_person: bool,
-    debug: Option<&DebugInfo<'_>>,
+    debug: Option<&DebugInfo>,
     gs: f32,
     attack: &AttackIndicatorState,
     text_width_fn: TextWidthFn,
@@ -1603,7 +1602,7 @@ fn build_vehicle_hearts(
 
 pub fn build_debug_overlay(
     elements: &mut Vec<MenuElement>,
-    info: &DebugInfo<'_>,
+    info: &DebugInfo,
     gs: f32,
     text_width_fn: TextWidthFn,
 ) {
@@ -1658,11 +1657,8 @@ pub fn build_debug_overlay(
 
     push_debug_lines(elements, left_lines, pad, pad, fs, true, text_width_fn);
 
-    let mut right_lines: Vec<String> = vec![
-        info.vulkan_version.to_string(),
-        format!("GPU: {}", info.gpu_name),
-        format!("Display: {}x{}", info.screen_w, info.screen_h),
-    ];
+    let mut right_lines = info.renderer.debug_lines();
+    right_lines.push(format!("Display: {}x{}", info.screen_w, info.screen_h));
 
     if let Some(t) = &info.timings {
         right_lines.push(String::new());
@@ -1684,37 +1680,6 @@ pub fn build_debug_overlay(
         false,
         text_width_fn,
     );
-}
-
-fn push_debug_lines(
-    elements: &mut Vec<MenuElement>,
-    lines: Vec<String>,
-    x: f32,
-    start_y: f32,
-    fs: f32,
-    left_align: bool,
-    text_width_fn: TextWidthFn,
-) {
-    let line_h = fs * 1.25;
-    for (i, line) in lines.into_iter().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
-        let y = start_y + i as f32 * line_h;
-        let tx = if left_align {
-            x
-        } else {
-            x - text_width_fn(&line, fs)
-        };
-        elements.push(MenuElement::Text {
-            x: tx,
-            y,
-            text: line,
-            scale: fs,
-            color: WHITE,
-            centered: false,
-        });
-    }
 }
 
 /// Vanilla `DebugEntryPosition`: the direction, which way it points, and

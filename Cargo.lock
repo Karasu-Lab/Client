@@ -4736,6 +4736,8 @@ dependencies = [
  "ui",
  "utils",
  "uuid 1.29.0",
+ "wasm-bindgen-futures",
+ "web-sys",
  "web-time",
  "wgpu 0.1.0",
  "winit",
@@ -4801,7 +4803,6 @@ dependencies = [
 name = "pomme-singleplayer"
 version = "0.1.0"
 dependencies = [
- "pomme-protocol",
  "steel-core",
  "steel-login",
  "steel-registry",
@@ -5830,6 +5831,7 @@ name = "settings"
 version = "0.1.0"
 dependencies = [
  "camera",
+ "resourcepack",
  "seed",
  "thiserror 2.0.21",
  "utils",

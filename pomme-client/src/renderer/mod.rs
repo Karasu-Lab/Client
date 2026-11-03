@@ -1354,6 +1354,24 @@ impl Renderer {
         &self.ctx.api_version
     }
 
+    /// What the F3 screen says about the graphics API, the GPU and its driver.
+    pub fn renderer_info(&self) -> debugger::RendererInfo {
+        #[cfg(feature = "wgpu")]
+        let driver = {
+            let info = self.ctx.adapter.get_info();
+            format!("{} {}", info.driver, info.driver_info)
+                .trim()
+                .to_owned()
+        };
+        #[cfg(not(feature = "wgpu"))]
+        let driver = String::new();
+        debugger::RendererInfo {
+            backend: self.ctx.api_version.clone(),
+            adapter: self.ctx.gpu_name.clone(),
+            driver,
+        }
+    }
+
     pub fn loaded_chunk_count(&self) -> u32 {
         self.chunk_buffers.chunk_count()
     }

@@ -21,6 +21,7 @@ use web_time::Instant;
 pub mod bedrock;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod client;
+pub mod packs;
 
 const VERSION_MANIFEST_URL: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";

@@ -20,6 +20,3 @@ steel-utils = { path = "../third_party/SteelMC/steel-utils" }
 tokio = { workspace = true, features = ["full"], optional = true }
 tokio-util = { version = "0.7", features = ["rt"], optional = true }
 tracing = { workspace = true }
-
-[dev-dependencies]
-pomme-protocol = { path = "../pomme-protocol" }

@@ -689,6 +689,39 @@ fn durability_color(health: f32) -> [f32; 4] {
 /// Measures rendered text width in framebuffer px at the given font size.
 pub type TextWidthFn<'a> = &'a dyn Fn(&str, f32) -> f32;
 
+/// The F3 screen's lines, one per row, at `x` (right-aligned unless
+/// `left_align`) from `start_y` down.
+pub(crate) fn push_debug_lines(
+    elements: &mut Vec<MenuElement>,
+    lines: Vec<String>,
+    x: f32,
+    start_y: f32,
+    fs: f32,
+    left_align: bool,
+    text_width_fn: TextWidthFn,
+) {
+    let line_h = fs * 1.25;
+    for (i, line) in lines.into_iter().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let y = start_y + i as f32 * line_h;
+        let tx = if left_align {
+            x
+        } else {
+            x - text_width_fn(&line, fs)
+        };
+        elements.push(MenuElement::Text {
+            x: tx,
+            y,
+            text: line,
+            scale: fs,
+            color: WHITE,
+            centered: false,
+        });
+    }
+}
+
 /// Inputs for the vanilla scrolling-label treatment: labels wider than the
 /// widget are clipped to it and slide back and forth over time.
 pub struct LabelScroll<'a> {

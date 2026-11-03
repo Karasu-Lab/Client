@@ -28,7 +28,7 @@ impl JavaRandom {
     /// uses where the exact sequence doesn't matter.
     pub fn from_time() -> Self {
         let nanos = crate::clock::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+            .duration_since(crate::clock::UNIX_EPOCH)
             .map(|d| d.subsec_nanos() as i64 + d.as_secs() as i64)
             .unwrap_or(0);
         Self::new(nanos)

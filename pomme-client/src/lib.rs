@@ -1,3 +1,9 @@
+// The viewer shares the renderer, the world and their data with the game, and
+// the game is what reaches the physics, entity, chat and inventory code the
+// renderer's types come with; built without it, that code is unreachable by
+// design.
+#![cfg_attr(not(feature = "game"), allow(dead_code))]
+
 // Per-thread-heap allocator (see Cargo.toml): keeps the chunk-mesh worker
 // pool's cross-thread Vec churn from serializing on the system heap's global
 // lock and stalling the main thread.
@@ -55,6 +61,8 @@ mod ui;
 mod update;
 mod user;
 mod util;
+#[cfg(not(feature = "game"))]
+pub mod viewer;
 mod version;
 mod world;
 

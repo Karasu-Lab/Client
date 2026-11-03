@@ -160,6 +160,8 @@ gilrs = "0.11.2"
 getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom-03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 getrandom-04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
 web-time = "1"
 
 # arboard has no Android or iOS backend; pyronyx's window-handle helpers don't

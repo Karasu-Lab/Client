@@ -2,7 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "ttf-fonts")]
 use std::ffi::CStr;
-use std::io::{BufRead, BufReader, Cursor, Read};
+use std::io::{BufRead, BufReader, Cursor};
 #[cfg(feature = "ttf-fonts")]
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};

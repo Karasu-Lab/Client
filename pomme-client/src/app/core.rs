@@ -1009,10 +1009,11 @@ fn cursor_step(grabbed: bool, stale: bool, want: bool, focused: bool) -> (Cursor
 fn load_assets(
     data_dirs: &DataDirs,
     version: &str,
-    resource_packs: &ResourcePackManager,
+    resource_packs: &mut ResourcePackManager,
     menu: &mut MainMenu,
 ) -> (Option<AssetIndex>, crate::audio::AudioEngine) {
     let asset_index = AssetIndex::load(&data_dirs.indexes_dir, &data_dirs.objects_dir, version);
+    resource_packs.set_builtin(data_dirs.jar_assets_dir.clone(), asset_index.clone());
     menu.load_splash(&data_dirs.jar_assets_dir, &asset_index);
     let audio = crate::audio::AudioEngine::new(
         &data_dirs.jar_assets_dir,
@@ -1057,7 +1058,10 @@ impl AppCore {
         user: UserData,
         window_size: winit::dpi::LogicalSize<u32>,
     ) -> Self {
-        let resource_packs = ResourcePackManager::new(&data_dirs.game_dir);
+        let mut resource_packs = ResourcePackManager::with_location(
+            &data_dirs.game_dir,
+            &data_dirs.resource_pack_location,
+        );
 
         let mut input = InputState::new();
         let mut menu = MainMenu::new(
@@ -1072,7 +1076,8 @@ impl AppCore {
 
         let display_mode = menu.display_mode;
 
-        let (asset_index, audio) = load_assets(&data_dirs, &version, &resource_packs, &mut menu);
+        let (asset_index, audio) =
+            load_assets(&data_dirs, &version, &mut resource_packs, &mut menu);
         let (player_skin_tx, player_skin_rx) = crossbeam_channel::unbounded();
         let (head_tx, head_rx) = crossbeam_channel::unbounded();
 
@@ -1703,7 +1708,7 @@ impl AppCore {
         let (asset_index, audio) = load_assets(
             &self.data_dirs,
             &self.version,
-            &self.resource_packs,
+            &mut self.resource_packs,
             &mut self.menu,
         );
         self.asset_index = asset_index;

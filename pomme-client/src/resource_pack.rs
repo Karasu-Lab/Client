@@ -1,5 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use resourcepack::{PackLocation, PackStack};
+
+use crate::assets::AssetIndex;
+
 pub const CURRENT_PACK_FORMAT: u32 = 84;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,46 +35,191 @@ struct ActivePack {
     info: PackInfo,
 }
 
+/// The id of the built-in layer, which sits below every pack.
+const BUILTIN_ID: &str = "builtin";
+
+/// The jar's `assets/` and the asset index: one built-in pack, the index first.
+struct BuiltinAssets {
+    jar_assets_dir: PathBuf,
+    asset_index: Option<AssetIndex>,
+}
+
+impl BuiltinAssets {
+    fn resolve(&self, asset_key: &str) -> Option<PathBuf> {
+        crate::assets::builtin_asset(&self.jar_assets_dir, &self.asset_index, asset_key)
+    }
+}
+
+/// One layer of the stack: the built-in resources at the bottom, then packs.
+enum Layer {
+    Builtin(BuiltinAssets),
+    Pack(ActivePack),
+}
+
+impl Layer {
+    fn pack(&self) -> Option<&ActivePack> {
+        match self {
+            Layer::Pack(pack) => Some(pack),
+            Layer::Builtin(_) => None,
+        }
+    }
+}
+
 pub struct ResourcePackManager {
     packs_dir: PathBuf,
     server_cache_dir: PathBuf,
-    active_packs: Vec<ActivePack>,
+    active_packs: PackStack<Layer>,
     available_local: Vec<PackInfo>,
 }
 
 impl ResourcePackManager {
+    /// Packs live in `resourcepacks` inside `instance_dir`.
     pub fn new(instance_dir: &Path) -> Self {
-        let packs_dir = instance_dir.join("resourcepacks");
+        Self::with_location(instance_dir, &PackLocation::Default)
+    }
+
+    /// Packs live where `location` says; a relative directory is taken from
+    /// `instance_dir`.
+    pub fn with_location(instance_dir: &Path, location: &PackLocation) -> Self {
+        let packs_dir = location.resolve(instance_dir);
         let server_cache_dir = packs_dir.join(".server_cache");
         let _ = pomme_vfs::create_dir_all(&packs_dir);
         let _ = pomme_vfs::create_dir_all(&server_cache_dir);
         let mut mgr = Self {
             packs_dir,
             server_cache_dir,
-            active_packs: Vec::new(),
+            active_packs: PackStack::new(),
             available_local: Vec::new(),
         };
         mgr.scan_local_packs();
         mgr
     }
 
+    pub fn packs_dir(&self) -> &Path {
+        &self.packs_dir
+    }
+
+    /// The active packs, from the lowest priority to the highest; the built-in
+    /// layer is not one of them.
+    fn packs_ascending(&self) -> impl DoubleEndedIterator<Item = &ActivePack> {
+        self.active_packs
+            .ascending()
+            .filter_map(|layer| layer.pack.pack())
+    }
+
+    /// Makes the jar's assets and the asset index the layer below every pack,
+    /// replacing the one set before.
+    pub fn set_builtin(&mut self, jar_assets_dir: PathBuf, asset_index: Option<AssetIndex>) {
+        self.active_packs.insert(
+            BUILTIN_ID,
+            i32::MIN,
+            Layer::Builtin(BuiltinAssets {
+                jar_assets_dir,
+                asset_index,
+            }),
+        );
+    }
+
+    /// The path of the pack that wins over every pack below it; the built-in
+    /// layer is not asked.
     pub fn resolve_asset(&self, asset_key: &str) -> Option<PathBuf> {
         if !crate::assets::valid_asset_key(asset_key) {
             return None;
         }
-        for pack in self.active_packs.iter().rev() {
+        self.packs_ascending().rev().find_map(|pack| {
             let path = pack.dir.join("assets").join(asset_key);
-            if pomme_vfs::exists(&path) {
-                return Some(path);
+            pomme_vfs::exists(&path).then_some(path)
+        })
+    }
+
+    /// The path of the topmost layer holding `asset_key`, the built-in layer
+    /// included. `builtin` stands in for that layer while none is set.
+    pub fn resolve_layered(
+        &self,
+        asset_key: &str,
+        builtin: impl FnOnce() -> Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        let found = self.active_packs.descending().find_map(|layer| match &layer.pack {
+            Layer::Builtin(builtin) => builtin.resolve(asset_key),
+            Layer::Pack(pack) => {
+                let path = pack.dir.join("assets").join(asset_key);
+                pomme_vfs::exists(&path).then_some(path)
             }
-        }
-        None
+        });
+        found.or_else(|| (!self.has_builtin()).then(builtin).flatten())
+    }
+
+    /// Every layer's path for `asset_key`, from the built-in layer up to the
+    /// highest pack. `builtin` stands in for the built-in layer while none is
+    /// set.
+    pub fn layered_paths(
+        &self,
+        asset_key: &str,
+        builtin: impl FnOnce() -> Option<PathBuf>,
+    ) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = (!self.has_builtin())
+            .then(builtin)
+            .flatten()
+            .into_iter()
+            .collect();
+        paths.extend(self.active_packs.ascending().filter_map(|layer| {
+            match &layer.pack {
+                Layer::Builtin(builtin) => builtin.resolve(asset_key),
+                Layer::Pack(pack) => {
+                    let path = pack.dir.join("assets").join(asset_key);
+                    pomme_vfs::is_file(&path).then_some(path)
+                }
+            }
+        }));
+        paths
+    }
+
+    fn has_builtin(&self) -> bool {
+        self.active_packs.get(BUILTIN_ID).is_some()
     }
 
     /// Active pack roots in low-to-high priority order, matching the order in
     /// which stacked resources are registered by Vanilla.
     pub fn active_pack_dirs(&self) -> impl Iterator<Item = &Path> {
-        self.active_packs.iter().map(|pack| pack.dir.as_path())
+        self.packs_ascending().map(|pack| pack.dir.as_path())
+    }
+
+    /// Moves an active pack to `priority`; a higher one overrides a lower one,
+    /// and among equal priorities the pack enabled last wins. The built-in
+    /// layer stays at the bottom.
+    pub fn set_pack_priority(&mut self, id: &str, priority: i32) -> bool {
+        id != BUILTIN_ID && self.active_packs.set_priority(id, priority)
+    }
+
+    pub fn pack_priority(&self, id: &str) -> Option<i32> {
+        self.active_packs.priority(id)
+    }
+
+    /// Moves the pack `by` places along [`Self::active_pack_info`]'s order,
+    /// towards the highest priority when positive. `id` is the pack's id, or
+    /// the name its info shows. False if there is no such pack or the place is
+    /// past either end.
+    pub fn move_pack(&mut self, id: &str, by: isize) -> bool {
+        let mut ids: Vec<String> = self.packs_ascending().map(|pack| pack.id.clone()).collect();
+        let Some(from) = ids
+            .iter()
+            .position(|candidate| candidate == id)
+            .or_else(|| self.packs_ascending().position(|pack| pack.info.name == id))
+        else {
+            return false;
+        };
+        let Some(to) = from
+            .checked_add_signed(by)
+            .filter(|&to| to < ids.len())
+        else {
+            return false;
+        };
+        let moved = ids.remove(from);
+        ids.insert(to, moved);
+        for (priority, id) in ids.iter().enumerate() {
+            self.active_packs.set_priority(id, priority as i32);
+        }
+        true
     }
 
     /// Resolve a resource-pack asset together with the metadata sidecar that
@@ -82,12 +231,13 @@ impl ResourcePackManager {
         asset_key: &str,
     ) -> Option<(PathBuf, Option<PathBuf>)> {
         let metadata_key = format!("{asset_key}.mcmeta");
-        for (source_index, pack) in self.active_packs.iter().enumerate().rev() {
+        let layers: Vec<_> = self.packs_ascending().collect();
+        for (source_index, pack) in layers.iter().enumerate().rev() {
             let path = pack.dir.join("assets").join(asset_key);
             if !pomme_vfs::exists(&path) {
                 continue;
             }
-            let metadata = self.active_packs[source_index..]
+            let metadata = layers[source_index..]
                 .iter()
                 .rev()
                 .map(|candidate| candidate.dir.join("assets").join(&metadata_key))
@@ -124,27 +274,32 @@ impl ResourcePackManager {
 
     pub fn apply_server_pack(&mut self, id: uuid::Uuid, hash: &str) {
         let pack_id = id.to_string();
-        self.active_packs.retain(|p| p.id != pack_id);
         let dir = self.server_pack_dir(hash);
         let info = parse_pack_meta_dir(&dir, hash);
-        self.active_packs.push(ActivePack {
-            id: pack_id,
-            source: PackSource::Server,
-            dir,
-            info: PackInfo {
-                enabled: true,
+        self.active_packs.push(
+            pack_id.clone(),
+            Layer::Pack(ActivePack {
+                id: pack_id,
                 source: PackSource::Server,
-                ..info
-            },
-        });
+                dir,
+                info: PackInfo {
+                    enabled: true,
+                    source: PackSource::Server,
+                    ..info
+                },
+            }),
+        );
         tracing::info!("Applied server resource pack {id} (hash: {hash})");
     }
 
     pub fn remove_server_pack(&mut self, id: &uuid::Uuid) -> bool {
         let id_str = id.to_string();
         let before = self.active_packs.len();
-        self.active_packs
-            .retain(|p| !(p.id == id_str && p.source == PackSource::Server));
+        self.active_packs.retain(|l| {
+            l.pack
+                .pack()
+                .is_none_or(|p| !(p.id == id_str && p.source == PackSource::Server))
+        });
         let removed = self.active_packs.len() < before;
         if removed {
             tracing::info!("Removed server resource pack {id}");
@@ -154,7 +309,8 @@ impl ResourcePackManager {
 
     pub fn clear_server_packs(&mut self) -> bool {
         let before = self.active_packs.len();
-        self.active_packs.retain(|p| p.source != PackSource::Server);
+        self.active_packs
+            .retain(|l| l.pack.pack().is_none_or(|p| p.source != PackSource::Server));
         let removed = self.active_packs.len() != before;
         if removed {
             tracing::info!("Cleared all server resource packs");
@@ -179,8 +335,7 @@ impl ResourcePackManager {
             if pomme_vfs::is_dir(&path) {
                 if pomme_vfs::exists(path.join("pack.mcmeta")) {
                     let already_active = self
-                        .active_packs
-                        .iter()
+                        .packs_ascending()
                         .any(|p| p.source == PackSource::Local && p.dir == path);
                     let mut info = parse_pack_meta_dir(&path, &name);
                     info.enabled = already_active;
@@ -191,8 +346,7 @@ impl ResourcePackManager {
                 && let Some(mut info) = parse_pack_meta_zip(&path, &name)
             {
                 let already_active = self
-                    .active_packs
-                    .iter()
+                    .packs_ascending()
                     .any(|p| p.source == PackSource::Local && p.id == name);
                 info.enabled = already_active;
                 info.source = PackSource::Local;
@@ -204,18 +358,20 @@ impl ResourcePackManager {
     pub fn enable_local_pack(&mut self, name: &str) {
         let path = self.packs_dir.join(name);
         if pomme_vfs::is_dir(&path) && pomme_vfs::exists(path.join("pack.mcmeta")) {
-            self.active_packs.retain(|p| p.id != name);
             let info = parse_pack_meta_dir(&path, name);
-            self.active_packs.push(ActivePack {
-                id: name.to_owned(),
-                source: PackSource::Local,
-                dir: path,
-                info: PackInfo {
-                    enabled: true,
+            self.active_packs.push(
+                name,
+                Layer::Pack(ActivePack {
+                    id: name.to_owned(),
                     source: PackSource::Local,
-                    ..info
-                },
-            });
+                    dir: path,
+                    info: PackInfo {
+                        enabled: true,
+                        source: PackSource::Local,
+                        ..info
+                    },
+                }),
+            );
             tracing::info!("Enabled local resource pack: {name}");
         } else if path.extension().is_some_and(|e| e == "zip")
             && let Ok(data) = pomme_vfs::read(&path)
@@ -226,31 +382,36 @@ impl ResourcePackManager {
                 return;
             }
             let info = parse_pack_meta_dir(&extract_dir, name);
-            self.active_packs.retain(|p| p.id != name);
-            self.active_packs.push(ActivePack {
-                id: name.to_owned(),
-                source: PackSource::Local,
-                dir: extract_dir,
-                info: PackInfo {
-                    enabled: true,
+            self.active_packs.push(
+                name,
+                Layer::Pack(ActivePack {
+                    id: name.to_owned(),
                     source: PackSource::Local,
-                    ..info
-                },
-            });
+                    dir: extract_dir,
+                    info: PackInfo {
+                        enabled: true,
+                        source: PackSource::Local,
+                        ..info
+                    },
+                }),
+            );
             tracing::info!("Enabled local resource pack: {name}");
         }
         self.scan_local_packs();
     }
 
     pub fn disable_local_pack(&mut self, name: &str) {
-        self.active_packs
-            .retain(|p| !(p.id == name && p.source == PackSource::Local));
+        self.active_packs.retain(|l| {
+            l.pack
+                .pack()
+                .is_none_or(|p| !(p.id == name && p.source == PackSource::Local))
+        });
         tracing::info!("Disabled local resource pack: {name}");
         self.scan_local_packs();
     }
 
     pub fn active_pack_info(&self) -> Vec<PackInfo> {
-        self.active_packs.iter().map(|p| p.info.clone()).collect()
+        self.packs_ascending().map(|p| p.info.clone()).collect()
     }
 
     pub fn available_local_packs(&self) -> &[PackInfo] {
@@ -259,6 +420,81 @@ impl ResourcePackManager {
 
     pub fn server_cache_dir(&self) -> &Path {
         &self.server_cache_dir
+    }
+}
+
+/// Why [`prepare_location`] could not make a pack location ready.
+#[derive(Debug)]
+pub enum LocationError {
+    /// This platform has no such place: a base URL and a storage namespace are
+    /// for the browser.
+    Unsupported(PackLocation),
+    Fetch(String),
+    Storage(String),
+}
+
+impl std::fmt::Display for LocationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(location) => write!(
+                f,
+                "the resource pack location `{}` only works in the browser",
+                location.to_setting()
+            ),
+            Self::Fetch(e) => write!(f, "fetching the resource packs failed: {e}"),
+            Self::Storage(e) => write!(f, "the browser's pack storage failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for LocationError {}
+
+/// Makes the directory `location` resolves to ready for a
+/// [`ResourcePackManager`], and returns it.
+///
+/// A directory is created if it is missing. In the browser a storage namespace
+/// is read back into the file tree, and a base URL is fetched into it (see
+/// `pomme_install::packs`), falling back on what an earlier visit stored when
+/// the fetch fails. Elsewhere those two are an error.
+pub async fn prepare_location(
+    location: &PackLocation,
+    game_dir: &Path,
+) -> Result<PathBuf, LocationError> {
+    let dir = location.resolve(game_dir);
+    match location {
+        PackLocation::Default | PackLocation::Directory(_) => {
+            pomme_vfs::create_dir_all(&dir).map_err(|e| LocationError::Storage(e.to_string()))?;
+            Ok(dir)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        PackLocation::Namespace(_) | PackLocation::Url(_) => {
+            Err(LocationError::Unsupported(location.clone()))
+        }
+        #[cfg(target_arch = "wasm32")]
+        PackLocation::Namespace(namespace) => {
+            pomme_vfs::browser::restore(namespace)
+                .await
+                .map_err(LocationError::Storage)?;
+            pomme_vfs::create_dir_all(&dir).map_err(|e| LocationError::Storage(e.to_string()))?;
+            Ok(dir)
+        }
+        #[cfg(target_arch = "wasm32")]
+        PackLocation::Url(base) => {
+            let cache = format!("packs:{base}");
+            match pomme_install::packs::sync_packs(base, &dir).await {
+                Ok(_) => pomme_vfs::browser::persist_dir(&cache, &dir)
+                    .await
+                    .map_err(LocationError::Storage)?,
+                Err(fetch_error) => {
+                    let stored = pomme_vfs::browser::restore(&cache).await.unwrap_or(0);
+                    if stored == 0 {
+                        return Err(LocationError::Fetch(fetch_error));
+                    }
+                }
+            }
+            pomme_vfs::create_dir_all(&dir).map_err(|e| LocationError::Storage(e.to_string()))?;
+            Ok(dir)
+        }
     }
 }
 

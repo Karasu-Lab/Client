@@ -100,18 +100,11 @@ pub fn resource_stack_paths(
     if !checked_asset_key(asset_key) {
         return Vec::new();
     }
-    let mut stack: Vec<_> = builtin_asset(jar_assets_dir, asset_index, asset_key)
-        .into_iter()
-        .collect();
-    if let Some(packs) = packs {
-        for root in packs.active_pack_dirs() {
-            let path = root.join("assets").join(asset_key);
-            if pomme_vfs::is_file(&path) {
-                stack.push(path);
-            }
-        }
+    let builtin = || builtin_asset(jar_assets_dir, asset_index, asset_key);
+    match packs {
+        Some(packs) => packs.layered_paths(asset_key, builtin),
+        None => builtin().into_iter().collect(),
     }
-    stack
 }
 
 pub fn resolve_asset_path_with_packs(
@@ -123,10 +116,12 @@ pub fn resolve_asset_path_with_packs(
     if !checked_asset_key(asset_key) {
         return jar_assets_dir.join("__invalid_asset_key__");
     }
-    packs
-        .and_then(|packs| packs.resolve_asset(asset_key))
-        .or_else(|| builtin_asset(jar_assets_dir, asset_index, asset_key))
-        .unwrap_or_else(|| jar_assets_dir.join(asset_key))
+    let builtin = || builtin_asset(jar_assets_dir, asset_index, asset_key);
+    match packs {
+        Some(packs) => packs.resolve_layered(asset_key, builtin),
+        None => builtin(),
+    }
+    .unwrap_or_else(|| jar_assets_dir.join(asset_key))
 }
 
 fn checked_asset_key(asset_key: &str) -> bool {
@@ -137,8 +132,9 @@ fn checked_asset_key(asset_key: &str) -> bool {
     valid
 }
 
-/// The jar and the asset index are one built-in pack, the index first.
-fn builtin_asset(
+/// The jar and the asset index are one built-in pack, the index first. The
+/// pack stack holds it as its lowest layer.
+pub(crate) fn builtin_asset(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     asset_key: &str,
