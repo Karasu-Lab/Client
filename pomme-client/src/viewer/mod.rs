@@ -33,6 +33,7 @@ use crate::renderer::chunk::occlusion_graph::{self, VisibilitySet};
 use crate::renderer::pipelines::entity_shadow::ShadowScene;
 use crate::renderer::pipelines::held_item::HandRenderSelection;
 use crate::renderer::pipelines::lightmap::LightmapInfo;
+pub use crate::renderer::rhi::backend::Context as GpuContext;
 use crate::renderer::{CloudMode, Renderer, RendererError, SkyState};
 use crate::resource_pack::ResourcePackManager;
 use crate::ui::font::{FontOptions, FontSources};
@@ -42,8 +43,6 @@ use crate::world::chunk::ChunkStore;
 use crate::world::environment::{BiomeWeights, Environment, EnvironmentProbe};
 use crate::world::generated;
 use crate::world::light::{LevelLightEngine, LightDirty, LightTask, section_entries};
-
-pub use crate::renderer::rhi::backend::Context as GpuContext;
 
 /// One game tick, in seconds.
 const TICK_SECONDS: f32 = 1.0 / 20.0;
@@ -283,7 +282,8 @@ impl Viewer {
         let light_engine =
             LevelLightEngine::new(dimension.height, dimension.min_y, dimension.has_skylight);
 
-        let camera_position = Position::new(camera.position[0], camera.position[1], camera.position[2]);
+        let camera_position =
+            Position::new(camera.position[0], camera.position[1], camera.position[2]);
         let camera_look = LookDirection::new(camera.yaw_deg, camera.pitch_deg);
         renderer.reset_camera(camera_position, camera_look);
 
@@ -345,12 +345,10 @@ impl Viewer {
             stats,
             renderer_info,
         };
-        viewer
-            .chunk_store
-            .set_center(ChunkPos::new(
-                (camera.position[0] as i32).div_euclid(16),
-                (camera.position[2] as i32).div_euclid(16),
-            ));
+        viewer.chunk_store.set_center(ChunkPos::new(
+            (camera.position[0] as i32).div_euclid(16),
+            (camera.position[2] as i32).div_euclid(16),
+        ));
         Ok(viewer)
     }
 
@@ -380,7 +378,8 @@ impl Viewer {
 
     /// Resizes the drawing surface to the window's new size.
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.renderer.resize(PhysicalSize::new(width.max(1), height.max(1)));
+        self.renderer
+            .resize(PhysicalSize::new(width.max(1), height.max(1)));
     }
 
     /// The columns around the camera, nearest first.
@@ -614,7 +613,11 @@ impl Viewer {
         let radius = self
             .chunk_store
             .loaded_positions()
-            .map(|p| (p.x - player_chunk.x).abs().max((p.z - player_chunk.z).abs()))
+            .map(|p| {
+                (p.x - player_chunk.x)
+                    .abs()
+                    .max((p.z - player_chunk.z).abs())
+            })
             .max()
             .unwrap_or(0);
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -667,10 +670,10 @@ impl Viewer {
             self.block_light_flicker = tick_block_light_flicker(self.block_light_flicker);
             let plains = self.environment.plains;
             let chunks = &self.chunk_store;
-            self.biome_weights = BiomeWeights::sample(
-                self.renderer.camera_render_position() * 0.25,
-                |x, y, z| chunks.noise_biome(x, y, z).unwrap_or(plains),
-            );
+            self.biome_weights =
+                BiomeWeights::sample(self.renderer.camera_render_position() * 0.25, |x, y, z| {
+                    chunks.noise_biome(x, y, z).unwrap_or(plains)
+                });
             self.environment_probe.tick(self.environment.resolve(
                 self.sky_state.day_time as i64,
                 &self.biome_weights,
@@ -736,7 +739,11 @@ impl Viewer {
 
         let table = self.block_registry.block_state_table();
         let hand_light = {
-            let at = [eye.x.floor() as i32, eye.y.floor() as i32, eye.z.floor() as i32];
+            let at = [
+                eye.x.floor() as i32,
+                eye.y.floor() as i32,
+                eye.z.floor() as i32,
+            ];
             crate::renderer::chunk::block_lighter::LightLevels::new(
                 self.chunk_store.get_sky_light(at[0], at[1], at[2]),
                 self.chunk_store.get_block_light(at[0], at[1], at[2]),

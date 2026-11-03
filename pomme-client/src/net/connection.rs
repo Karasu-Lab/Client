@@ -615,9 +615,10 @@ async fn config_sequence(
                 if let Some(tags) = registry_tags(&p.tags, &dialog_registry_key()) {
                     received_dialog_tags = Some(tags);
                 }
-                if let Some(tags) =
-                    registry_tags(&p.tags, &crate::world::environment_wire::TIMELINE_REGISTRY.into())
-                {
+                if let Some(tags) = registry_tags(
+                    &p.tags,
+                    &crate::world::environment_wire::TIMELINE_REGISTRY.into(),
+                ) {
                     received_timeline_tags = Some(tags);
                 }
                 forward_tags(event_tx, &p.tags);
