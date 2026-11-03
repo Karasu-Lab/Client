@@ -283,7 +283,7 @@ fn dimension_info(
             .unwrap_or(0.0),
         default_clock: string("default_clock"),
         flat,
-        environment: Box::new(super::environment_wire::environment(
+        environment: Box::new(crate::world::environment_wire::environment(
             &dim._extra,
             registries,
             has_weather,

@@ -1,7 +1,10 @@
 //! Terrain generated from a seed alone, without a server or a connection.
 
+use simdnbt::ToNbtTag;
+use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
 use steel_core::headless::HeadlessWorld;
-use steel_registry::REGISTRY;
+use steel_registry::{REGISTRY, RegistryExt, TaggedRegistryExt};
+pub use steel_registry::packets::CURRENT_MC_PROTOCOL as PROTOCOL;
 pub use steel_utils::threading::{ThreadSpawner, install_thread_spawner};
 use steel_utils::{BlockStateId, ChunkPos, Identifier};
 
@@ -49,6 +52,77 @@ impl GeneratedWorld {
     /// Returns an error if generation fails.
     pub fn chunk_packet(&self, x: i32, z: i32) -> Result<Vec<u8>, String> {
         self.world.chunk_packet(ChunkPos::new(x, z))
+    }
+}
+
+/// What the registry sync tells a client about the overworld: the entries a
+/// client reads the dimension's environment and its biomes from.
+pub struct DimensionRegistries {
+    /// The dimension type, its `timelines` tag resolved to the ids it holds.
+    pub dimension_type: NbtCompound,
+    /// Every timeline, by id.
+    pub timelines: Vec<(String, NbtCompound)>,
+    /// Every biome in protocol-id order, which chunk sections name them by.
+    pub biomes: Vec<(String, NbtCompound)>,
+}
+
+fn compound(tag: NbtTag, what: &str) -> Result<NbtCompound, String> {
+    match tag {
+        NbtTag::Compound(compound) => Ok(compound),
+        _ => Err(format!("{what} is not a compound")),
+    }
+}
+
+impl GeneratedWorld {
+    /// The overworld's registry entries, as SteelMC would sync them.
+    ///
+    /// # Errors
+    /// Returns an error if the dimension type is missing or an entry is not a
+    /// compound.
+    pub fn registries(&self) -> Result<DimensionRegistries, String> {
+        let key = Identifier::vanilla_static("overworld");
+        let dimension = REGISTRY
+            .dimension_types
+            .by_key(&key)
+            .ok_or("the overworld has no dimension type")?;
+        let mut dimension_type = compound(dimension.to_nbt_tag(), "the dimension type")?;
+        if let Some(NbtTag::String(reference)) = dimension_type.get("timelines") {
+            let reference = reference.to_string();
+            if let Some(tag) = reference.strip_prefix('#') {
+                let tag: Identifier = tag.parse().map_err(|_| format!("bad tag {tag}"))?;
+                let ids = REGISTRY
+                    .timelines
+                    .iter_tag(&tag)
+                    .map(|timeline| timeline.key.to_string().as_str().into())
+                    .collect();
+                dimension_type.insert("timelines", NbtTag::List(NbtList::String(ids)));
+            }
+        }
+        let timelines = REGISTRY
+            .timelines
+            .iter()
+            .map(|(_, timeline)| {
+                Ok((
+                    timeline.key.to_string(),
+                    compound(timeline.to_nbt_tag(), "a timeline")?,
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        let biomes = REGISTRY
+            .biomes
+            .iter()
+            .map(|(_, biome)| {
+                Ok((
+                    biome.key.to_string(),
+                    compound(biome.to_nbt_tag(), "a biome")?,
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(DimensionRegistries {
+            dimension_type,
+            timelines,
+            biomes,
+        })
     }
 }
 

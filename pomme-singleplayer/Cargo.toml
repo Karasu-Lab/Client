@@ -13,6 +13,7 @@ default = ["server"]
 server = ["dep:steel-login", "dep:tokio", "dep:tokio-util"]
 
 [dependencies]
+simdnbt = "0.10"
 steel-core = { path = "../third_party/SteelMC/steel-core" }
 steel-login = { path = "../third_party/SteelMC/steel-login", optional = true }
 steel-registry = { path = "../third_party/SteelMC/steel-registry" }

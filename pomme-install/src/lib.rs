@@ -40,6 +40,9 @@ pub struct Endpoints {
     pub version_manifest: String,
     /// The asset objects, as `<base>/<first two hash digits>/<hash>`.
     pub resources_base: String,
+    /// Which asset objects to download, by their key in the asset index (such
+    /// as `minecraft/lang/en_us.json`). `None` downloads all of them.
+    pub keep_object: Option<fn(&str) -> bool>,
 }
 
 impl Default for Endpoints {
@@ -47,6 +50,7 @@ impl Default for Endpoints {
         Self {
             version_manifest: VERSION_MANIFEST_URL.to_owned(),
             resources_base: RESOURCES_BASE_URL.to_owned(),
+            keep_object: None,
         }
     }
 }
@@ -154,6 +158,25 @@ pub async fn install(
     .await
 }
 
+/// [`install_from`] over an HTTP client of its own.
+pub async fn install_with(
+    endpoints: &Endpoints,
+    assets_dir: &Path,
+    versions_dir: &Path,
+    version: &str,
+    on_progress: &(dyn Fn(Progress) + Send + Sync),
+) -> Result<(), String> {
+    install_from(
+        &reqwest::Client::new(),
+        endpoints,
+        assets_dir,
+        versions_dir,
+        version,
+        on_progress,
+    )
+    .await
+}
+
 /// [`install`] from `endpoints`.
 pub async fn install_from(
     http: &reqwest::Client,
@@ -185,8 +208,9 @@ pub async fn install_from(
     let objects_dir = assets_dir.join("objects");
     let objects = index
         .objects
-        .values()
-        .map(|obj| Fetch {
+        .iter()
+        .filter(|(key, _)| endpoints.keep_object.is_none_or(|keep| keep(key)))
+        .map(|(_, obj)| Fetch {
             url: format!(
                 "{}/{}/{}",
                 endpoints.resources_base,

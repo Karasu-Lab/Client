@@ -4,7 +4,10 @@
 //! and uploaded the way `GameState` does it — minus everything that needs a
 //! connection, an account or a player.
 
+pub mod assets;
 mod overlay;
+#[cfg(feature = "steel-world")]
+pub mod steel;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 
@@ -129,6 +132,9 @@ pub struct ViewerConfig {
     pub ui_enabled: bool,
     /// The wire protocol whose block states the world is in.
     pub protocol: i32,
+    /// Where the resource packs are kept, ready (see
+    /// [`assets::prepare`]).
+    pub resource_pack_location: resourcepack::PackLocation,
 }
 
 /// What the F3 screen lists beyond the renderer.
@@ -240,8 +246,9 @@ impl Viewer {
             vsync,
             ui_enabled,
             protocol,
+            resource_pack_location,
         } = config;
-        let packs = ResourcePackManager::new(&dirs.game_dir);
+        let packs = ResourcePackManager::with_location(&dirs.game_dir, &resource_pack_location);
         let mut renderer = Renderer::with_context(
             ctx,
             Arc::clone(&window),

@@ -4803,6 +4803,7 @@ dependencies = [
 name = "pomme-singleplayer"
 version = "0.1.0"
 dependencies = [
+ "simdnbt",
  "steel-core",
  "steel-login",
  "steel-registry",

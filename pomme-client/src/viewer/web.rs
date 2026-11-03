@@ -1,7 +1,7 @@
 //! The viewer in a browser: a winit window over the page's canvas, a GPU
 //! context the browser hands out asynchronously, and a frame per redraw.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -26,12 +26,19 @@ pub enum StartError {
 #[derive(Clone, Default)]
 pub struct ViewerHandle {
     viewer: Rc<RefCell<Option<Viewer>>>,
+    stopped: Rc<Cell<bool>>,
 }
 
 impl ViewerHandle {
     /// Whether the GPU is up and the viewer is drawing.
     pub fn running(&self) -> bool {
         self.viewer.borrow().is_some()
+    }
+
+    /// Stops drawing and drops the viewer; the page's canvas stays as it was.
+    pub fn stop(&self) {
+        self.stopped.set(true);
+        *self.viewer.borrow_mut() = None;
     }
 
     pub fn set_ui_enabled(&self, enabled: bool) {
@@ -66,6 +73,7 @@ impl App {
         let canvas = self.canvas.clone();
         let source = Arc::clone(&self.source);
         let slot = Rc::clone(&self.handle.viewer);
+        let stopped = Rc::clone(&self.handle.stopped);
         wasm_bindgen_futures::spawn_local(async move {
             let context = match GpuContext::from_canvas(canvas).await {
                 Ok(context) => context,
@@ -76,8 +84,10 @@ impl App {
             };
             match Viewer::new(context, Arc::clone(&window), config, source) {
                 Ok(viewer) => {
-                    *slot.borrow_mut() = Some(viewer);
-                    window.request_redraw();
+                    if !stopped.get() {
+                        *slot.borrow_mut() = Some(viewer);
+                        window.request_redraw();
+                    }
                 }
                 Err(error) => tracing::error!("Couldn't start the viewer: {error}"),
             }
@@ -132,7 +142,7 @@ impl ApplicationHandler for App {
                     viewer.toggle_debug_screen();
                 }
             }
-            WindowEvent::RedrawRequested => {
+            WindowEvent::RedrawRequested if !self.handle.stopped.get() => {
                 self.redraw();
                 if let Some(window) = &self.window {
                     window.request_redraw();
