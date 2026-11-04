@@ -61,7 +61,10 @@ impl ObjectSnapshot {
             }
             *last = Some(now);
         }
-        if self.running.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .running
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
             return;
         }
         let snapshot = self.clone();
