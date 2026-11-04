@@ -365,13 +365,9 @@ impl DownloadState {
     /// that started and has not finished yet.
     fn current_file(&self) -> (u64, u64) {
         for (index, started) in self.started.iter().enumerate() {
-            if started.load(Ordering::Relaxed) && !self.finished[index].load(Ordering::Relaxed)
-            {
+            if started.load(Ordering::Relaxed) && !self.finished[index].load(Ordering::Relaxed) {
                 let size = self.sizes[index];
-                return (
-                    self.received[index].load(Ordering::Relaxed).min(size),
-                    size,
-                );
+                return (self.received[index].load(Ordering::Relaxed).min(size), size);
             }
         }
         (0, 0)
