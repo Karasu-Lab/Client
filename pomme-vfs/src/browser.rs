@@ -13,12 +13,16 @@ fn js_error(error: JsValue) -> String {
     error.as_string().unwrap_or_else(|| format!("{error:?}"))
 }
 
+pub fn cache_name(namespace: &str) -> String {
+    format!("pomme-vfs:{namespace}")
+}
+
 async fn open(namespace: &str) -> Result<Cache, String> {
     let storage: CacheStorage = Reflect::get(&js_sys::global(), &JsValue::from_str("caches"))
         .map_err(js_error)?
         .dyn_into()
         .map_err(|_| "the browser has no Cache storage".to_owned())?;
-    let cache = JsFuture::from(storage.open(&format!("pomme-vfs:{namespace}")))
+    let cache = JsFuture::from(storage.open(&cache_name(namespace)))
         .await
         .map_err(js_error)?;
     cache
@@ -26,7 +30,7 @@ async fn open(namespace: &str) -> Result<Cache, String> {
         .map_err(|_| "the Cache storage opened something else".to_owned())
 }
 
-fn key(path: &Path) -> String {
+pub fn key(path: &Path) -> String {
     let mut url = String::from(KEY_PREFIX);
     for (i, part) in path.components().enumerate() {
         if i > 0 {
@@ -101,6 +105,43 @@ pub async fn persist_dir_with(
         on_progress(done, total);
     }
     Ok(())
+}
+
+pub async fn persist_files(
+    namespace: &str,
+    paths: &[PathBuf],
+    on_progress: &dyn Fn(u32, u32),
+) -> Result<(), String> {
+    let total = paths.len() as u32;
+    let cache = open(namespace).await?;
+    on_progress(0, total);
+    for (index, path) in paths.iter().enumerate() {
+        JsFuture::from(put(&cache, path)?).await.map_err(js_error)?;
+        on_progress(index as u32 + 1, total);
+    }
+    Ok(())
+}
+
+pub async fn restore_paths(namespace: &str, paths: &[PathBuf]) -> Result<usize, String> {
+    let cache = open(namespace).await?;
+    let mut restored = 0;
+    for path in paths {
+        let Some(response) = JsFuture::from(cache.match_with_str(&key(path)))
+            .await
+            .map_err(js_error)?
+            .dyn_into::<Response>()
+            .ok()
+        else {
+            continue;
+        };
+        let buffer = JsFuture::from(response.array_buffer().map_err(js_error)?)
+            .await
+            .map_err(js_error)?;
+        let bytes = Uint8Array::new(&buffer).to_vec();
+        with(|fs| fs.write(path, &bytes)).map_err(|e| e.to_string())?;
+        restored += 1;
+    }
+    Ok(restored)
 }
 
 pub async fn restore(namespace: &str) -> Result<usize, String> {
