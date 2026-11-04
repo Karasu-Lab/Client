@@ -1,3 +1,7 @@
+#[cfg(target_arch = "wasm32")]
+pub use cache::VIEWER_ASSETS as ASSETS_NAMESPACE;
+#[cfg(target_arch = "wasm32")]
+use cache::VIEWER_VERSIONS as VERSIONS_NAMESPACE;
 pub use pomme_install::{
     Endpoints, Fetch, Hash, HttpTransfer, Progress, Stage, Transfer, Verified,
 };
@@ -7,11 +11,6 @@ use super::ViewerDirs;
 use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
 use crate::resource_pack::prepare_location;
-
-#[cfg(target_arch = "wasm32")]
-pub use cache::VIEWER_ASSETS as ASSETS_NAMESPACE;
-#[cfg(target_arch = "wasm32")]
-use cache::VIEWER_VERSIONS as VERSIONS_NAMESPACE;
 
 fn is_drawn(key: &str) -> bool {
     !key.starts_with("minecraft/sounds") && !key.starts_with("minecraft/records")

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-pub use cache::{cache_name, key};
 use cache::Entry;
+pub use cache::{cache_name, key};
 
 use crate::memory::global::with;
 
