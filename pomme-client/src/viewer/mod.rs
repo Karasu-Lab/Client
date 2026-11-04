@@ -22,7 +22,8 @@ use crate::entity::components::{LookDirection, Position};
 use crate::position::ChunkPos;
 use crate::renderer::chunk::mesh_columns::MeshColumns;
 use crate::renderer::chunk::mesh_source::MeshSource;
-use crate::renderer::chunk::mesher::{BiomeClimate, ChunkMeshData, MeshDispatcher};
+pub use crate::renderer::chunk::mesher::BiomeClimate;
+use crate::renderer::chunk::mesher::{ChunkMeshData, MeshDispatcher};
 use crate::renderer::chunk::occlusion_graph::{self, VisibilitySet};
 use crate::renderer::pipelines::entity_shadow::ShadowScene;
 use crate::renderer::pipelines::held_item::HandRenderSelection;
@@ -34,7 +35,8 @@ use crate::ui::font::{FontOptions, FontSources};
 use crate::world::block::block_registry::{BlockDefinitions, BlockRegistry};
 use crate::world::block::model::CardinalLightType;
 use crate::world::chunk::ChunkStore;
-use crate::world::environment::{BiomeWeights, Environment, EnvironmentProbe};
+pub use crate::world::environment::Environment;
+use crate::world::environment::{BiomeWeights, EnvironmentProbe};
 use crate::world::generated;
 use crate::world::light::{LevelLightEngine, LightDirty, LightTask, section_entries};
 
@@ -178,6 +180,13 @@ pub struct Viewer {
     pending_load_rescan: bool,
 
     requested: HashSet<ChunkPos>,
+    /// Columns whose last load failed, with the frame from which they
+    /// may be requested again. A source whose data arrives over time
+    /// (a replay being played back, a save being read) must have its
+    /// failures retried; a failed column that stayed requested would
+    /// never be asked for again.
+    retry_at: HashMap<ChunkPos, u64>,
+    frames: u64,
     generated_tx: Sender<Generated>,
     generated_rx: Receiver<Generated>,
     max_in_flight: usize,
@@ -194,6 +203,9 @@ pub struct Viewer {
     stats: Rc<std::cell::RefCell<Stats>>,
     renderer_info: Rc<std::cell::RefCell<RendererInfo>>,
 }
+
+/// Frames a failed column waits before it may be requested again.
+const RETRY_FRAMES: u64 = 30;
 
 impl Viewer {
     pub fn new(
@@ -296,6 +308,8 @@ impl Viewer {
             last_vis_cam: (i32::MIN, i32::MIN, i32::MIN),
             pending_load_rescan: false,
             requested: HashSet::new(),
+            retry_at: HashMap::new(),
+            frames: 0,
             generated_tx,
             generated_rx,
             max_in_flight: (thread::available_parallelism() / 2).clamp(2, 8),
@@ -323,6 +337,16 @@ impl Viewer {
 
     pub fn set_ui_enabled(&mut self, enabled: bool) {
         self.overlay.switch_mut().set(enabled);
+    }
+
+    /// Moves the camera; columns around the new position are requested
+    /// from the source on the next tick.
+    pub fn set_camera(&mut self, camera: ViewerCamera) {
+        self.camera_position =
+            Position::new(camera.position[0], camera.position[1], camera.position[2]);
+        self.camera_look = LookDirection::new(camera.yaw_deg, camera.pitch_deg);
+        self.renderer
+            .reset_camera(self.camera_position, self.camera_look);
     }
 
     pub fn toggle_debug_screen(&mut self) -> bool {
@@ -377,6 +401,9 @@ impl Viewer {
             if in_flight >= self.max_in_flight {
                 break;
             }
+            if self.retry_at.get(&pos).is_some_and(|&at| at > self.frames) {
+                continue;
+            }
             if !self.requested.insert(pos) {
                 continue;
             }
@@ -391,6 +418,15 @@ impl Viewer {
         Ok(())
     }
 
+    /// Unrequests a column whose load failed and holds it back for
+    /// [`RETRY_FRAMES`] frames, so a source that cannot serve it yet
+    /// (a replay that has not reached it, a save still being read) is
+    /// asked again instead of the column being lost.
+    fn defer_retry(&mut self, pos: ChunkPos) {
+        self.requested.remove(&pos);
+        self.retry_at.insert(pos, self.frames + RETRY_FRAMES);
+    }
+
     fn load_generated(&mut self) {
         while let Ok((pos, packet)) = self.generated_rx.try_recv() {
             let chunk = packet.and_then(|payload| generated::decode(&payload));
@@ -398,6 +434,7 @@ impl Viewer {
                 Ok(chunk) => chunk,
                 Err(error) => {
                     tracing::error!("Column [{}, {}] didn't generate: {error}", pos.x, pos.z);
+                    self.defer_retry(pos);
                     continue;
                 }
             };
@@ -410,8 +447,10 @@ impl Viewer {
                 table,
             ) {
                 tracing::error!("Failed to load chunk [{}, {}]: {error}", pos.x, pos.z);
+                self.defer_retry(pos);
                 continue;
             }
+            self.retry_at.remove(&pos);
             self.light_engine
                 .on_chunk_loaded(&mut self.chunk_store, table, (pos.x, pos.z));
             let count = self.light_engine.light_section_count();
@@ -645,6 +684,7 @@ impl Viewer {
     }
 
     pub fn frame(&mut self, dt: f32) -> Result<(), ViewerError> {
+        self.frames += 1;
         self.request_columns()?;
         self.load_generated();
         self.update_light();

@@ -59,7 +59,7 @@ pub async fn install(
         let url = format!("https://api.github.com/repos/{REPO}/git/trees/{tree_sha}?recursive=1");
         files.extend(fetches(crate::get_json(http, &url).await?, folder, &out)?);
     }
-    crate::download_all(http, files, &report).await?;
+    crate::download_all(http, files, on_progress).await?;
     // After the files, so a marker on disk means they're all there.
     crate::write_atomic(&out.join(MARKER), TAG.as_bytes()).await
 }

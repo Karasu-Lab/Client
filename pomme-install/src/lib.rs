@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -46,6 +48,11 @@ pub struct Progress {
     pub done: u32,
     pub total: u32,
     pub status: String,
+    /// Bytes received of the one file the operation is currently
+    /// downloading, and that file's size. Both are zero while no file
+    /// download is in flight.
+    pub file_done: u64,
+    pub file_total: u64,
 }
 
 impl Progress {
@@ -85,6 +92,7 @@ struct Downloads {
 struct Download {
     url: String,
     sha1: String,
+    size: u64,
 }
 
 #[derive(Deserialize)]
@@ -209,14 +217,28 @@ pub async fn install_from(
             hash: Hash::Sha1,
         })
         .collect();
-    download_all(http, objects, &report).await?;
+    download_all(http, objects, on_progress).await?;
     write_atomic(&index_path(assets_dir, version), &index_bytes).await?;
 
     let out = extracted_dir(versions_dir, version);
     if !pomme_vfs::exists(&extracted_marker(versions_dir, version)) {
-        report(0, 1, "Downloading the client jar...");
         let client = &version_json.downloads.client;
-        let jar = fetch_verified(http, &client.url, &client.sha1, Hash::Sha1).await?;
+        let jar = fetch_verified_with_progress(
+            http,
+            &client.url,
+            &client.sha1,
+            Hash::Sha1,
+            &|received| {
+                on_progress(Progress {
+                    done: 0,
+                    total: 1,
+                    status: "Downloading the client jar...".to_owned(),
+                    file_done: received,
+                    file_total: client.size,
+                });
+            },
+        )
+        .await?;
         let mut part = out.as_os_str().to_owned();
         part.push(".part");
         let part = PathBuf::from(part);
@@ -278,6 +300,8 @@ fn reporter(
             done,
             total,
             status: status.to_owned(),
+            file_done: 0,
+            file_total: 0,
         })
     }
 }
@@ -290,50 +314,142 @@ pub(crate) struct Fetch {
     pub hash: Hash,
 }
 
+/// A file counts as downloaded only when the bytes stored under its
+/// path hash to the value the download expects. A file that merely has
+/// the right size can still hold the wrong bytes — a write that was
+/// corrupted or a store that changed under us — and is fetched again.
+/// This is also what makes a stopped download resumable: everything
+/// already fetched and verified stays, and the next run fetches only
+/// what is missing or wrong.
+fn is_present(file: &Fetch) -> bool {
+    if pomme_vfs::len(&file.path) != Some(file.size) {
+        return false;
+    }
+    match pomme_vfs::read(&file.path) {
+        Ok(bytes) => file.hash.of(&bytes) == file.expected,
+        Err(_) => false,
+    }
+}
+
+/// The live state of a `download_all` run, shared by its download
+/// tasks: how many bytes of each file have arrived so far. Progress
+/// reports are built from it, so the one reported state is computed
+/// from all the downloads together instead of each download reporting
+/// over the others.
+struct DownloadState {
+    sizes: Vec<u64>,
+    received: Vec<AtomicU64>,
+    started: Vec<AtomicBool>,
+    finished: Vec<AtomicBool>,
+}
+
+impl DownloadState {
+    fn new(files: &[Fetch]) -> Self {
+        Self {
+            sizes: files.iter().map(|file| file.size).collect(),
+            received: files.iter().map(|_| AtomicU64::new(0)).collect(),
+            started: files.iter().map(|_| AtomicBool::new(false)).collect(),
+            finished: files.iter().map(|_| AtomicBool::new(false)).collect(),
+        }
+    }
+
+    fn bytes_done(&self) -> u64 {
+        self.sizes
+            .iter()
+            .zip(&self.received)
+            .map(|(size, received)| received.load(Ordering::Relaxed).min(*size))
+            .sum()
+    }
+
+    /// The one file the per-file progress follows: the first file
+    /// that started and has not finished yet.
+    fn current_file(&self) -> (u64, u64) {
+        for (index, started) in self.started.iter().enumerate() {
+            if started.load(Ordering::Relaxed) && !self.finished[index].load(Ordering::Relaxed)
+            {
+                let size = self.sizes[index];
+                return (
+                    self.received[index].load(Ordering::Relaxed).min(size),
+                    size,
+                );
+            }
+        }
+        (0, 0)
+    }
+}
+
+fn as_u32(bytes: u64) -> u32 {
+    u32::try_from(bytes).unwrap_or(u32::MAX)
+}
+
 pub(crate) async fn download_all(
     http: &reqwest::Client,
     files: Vec<Fetch>,
-    report: &(dyn Fn(u32, u32, &str) + Send + Sync),
+    on_progress: &(dyn Fn(Progress) + Send + Sync),
 ) -> Result<(), String> {
-    let missing: Vec<Fetch> = files
-        .into_iter()
-        .filter(|file| pomme_vfs::len(&file.path) != Some(file.size))
-        .collect();
-    let total = missing.len() as u32;
-    let total_mb = missing.iter().map(|f| f.size).sum::<u64>() as f64 / 1048576.0;
-
-    let mut done = 0;
-    let mut done_bytes = 0;
-    let mut last_report = Instant::now();
-    let mut pending = missing.into_iter();
-    let download = |file: Fetch| {
+    let missing: Vec<Fetch> = files.into_iter().filter(|file| !is_present(file)).collect();
+    let total_bytes = missing.iter().map(|file| file.size).sum::<u64>();
+    let state = DownloadState::new(&missing);
+    let last_report: Mutex<Option<Instant>> = Mutex::new(None);
+    let report = |force: bool| {
+        let now = Instant::now();
+        let mut last = last_report.lock().unwrap();
+        if !force && last.is_some_and(|last| now.duration_since(last) < PROGRESS_INTERVAL) {
+            return;
+        }
+        *last = Some(now);
+        drop(last);
+        let done = state.bytes_done();
+        let (file_done, file_total) = state.current_file();
+        on_progress(Progress {
+            done: as_u32(done),
+            total: as_u32(total_bytes),
+            status: format!(
+                "Downloading assets ({:.1}/{:.1} MB)",
+                done as f64 / 1048576.0,
+                total_bytes as f64 / 1048576.0
+            ),
+            file_done,
+            file_total,
+        });
+    };
+    let download = |index: usize, file: Fetch| {
         let http = http.clone();
+        let state = &state;
+        let report = &report;
         async move {
-            let bytes = fetch_verified(&http, &file.url, &file.expected, file.hash).await?;
+            state.started[index].store(true, Ordering::Relaxed);
+            let on_bytes = |received: u64| {
+                state.received[index].store(received, Ordering::Relaxed);
+                report(false);
+            };
+            let bytes = fetch_verified_with_progress(
+                &http,
+                &file.url,
+                &file.expected,
+                file.hash,
+                &on_bytes,
+            )
+            .await?;
             write_atomic(&file.path, &bytes).await?;
-            Ok::<u64, String>(file.size)
+            state.received[index].store(file.size, Ordering::Relaxed);
+            state.finished[index].store(true, Ordering::Relaxed);
+            report(true);
+            Ok::<(), String>(())
         }
     };
     let mut tasks = FuturesUnordered::new();
-    for file in pending.by_ref().take(CONCURRENT_DOWNLOADS) {
-        tasks.push(download(file));
+    let mut pending = missing.into_iter().enumerate();
+    for (index, file) in pending.by_ref().take(CONCURRENT_DOWNLOADS) {
+        tasks.push(download(index, file));
     }
     while let Some(result) = tasks.next().await {
-        done_bytes += result?;
-        done += 1;
-        if let Some(file) = pending.next() {
-            tasks.push(download(file));
-        }
-        if last_report.elapsed() >= PROGRESS_INTERVAL {
-            let done_mb = done_bytes as f64 / 1048576.0;
-            report(
-                done,
-                total,
-                &format!("Downloading assets ({done_mb:.1}/{total_mb:.1} MB)"),
-            );
-            last_report = Instant::now();
+        result?;
+        if let Some((index, file)) = pending.next() {
+            tasks.push(download(index, file));
         }
     }
+    report(true);
     Ok(())
 }
 
@@ -361,8 +477,25 @@ pub(crate) async fn get(http: &reqwest::Client, url: &str) -> Result<reqwest::Re
 }
 
 async fn fetch(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let bytes = get(http, url).await?.bytes().await;
-    Ok(bytes.map_err(|e| e.to_string())?.to_vec())
+    fetch_with_progress(http, url, &|_| {}).await
+}
+
+/// Downloads `url`, calling `on_bytes` with the number of bytes
+/// received so far after every chunk.
+async fn fetch_with_progress(
+    http: &reqwest::Client,
+    url: &str,
+    on_bytes: &(dyn Fn(u64) + Send + Sync),
+) -> Result<Vec<u8>, String> {
+    let response = get(http, url).await?;
+    let mut bytes = Vec::with_capacity(response.content_length().unwrap_or(0) as usize);
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        bytes.extend_from_slice(&chunk);
+        on_bytes(bytes.len() as u64);
+    }
+    Ok(bytes)
 }
 
 async fn fetch_verified(
@@ -371,8 +504,23 @@ async fn fetch_verified(
     expected: &str,
     hash: Hash,
 ) -> Result<Vec<u8>, String> {
+    fetch_verified_with_progress(http, url, expected, hash, &|_| {}).await
+}
+
+/// Downloads `url` until the bytes hash to `expected`, reporting the
+/// bytes of each attempt through `on_bytes`. An attempt restarts the
+/// count, so the reported progress always follows the attempt that
+/// can still succeed.
+async fn fetch_verified_with_progress(
+    http: &reqwest::Client,
+    url: &str,
+    expected: &str,
+    hash: Hash,
+    on_bytes: &(dyn Fn(u64) + Send + Sync),
+) -> Result<Vec<u8>, String> {
     with_retries(url, || async {
-        let bytes = fetch(http, url).await?;
+        on_bytes(0);
+        let bytes = fetch_with_progress(http, url, on_bytes).await?;
         if hash.of(&bytes) == expected {
             Ok(bytes)
         } else {
@@ -445,7 +593,7 @@ fn extract_assets(jar: &[u8], out: &Path, report: &dyn Fn(u32, u32)) -> Result<(
 mod tests {
     use std::io::Write;
 
-    use super::{Hash, extract_assets, is_installed, write_atomic};
+    use super::{Fetch, Hash, extract_assets, is_installed, is_present, write_atomic};
 
     pub(crate) fn temp_dir(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("pomme-install-{label}-{}", std::process::id()))
@@ -501,6 +649,28 @@ mod tests {
         assert!(dir.join("assets/minecraft/lang/en_us.json").exists());
         assert!(!dir.join("net").exists());
         assert!(!dir.parent().unwrap().join("escaped.txt").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn presence_needs_the_expected_bytes_not_just_the_size() {
+        let dir = temp_dir("present");
+        let path = dir.join("objects/aa/object");
+        let fetch = Fetch {
+            url: String::new(),
+            path: path.clone(),
+            size: 5,
+            expected: Hash::Sha1.of(b"hello"),
+            hash: Hash::Sha1,
+        };
+        assert!(!is_present(&fetch));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"hello").unwrap();
+        assert!(is_present(&fetch));
+        // The same size with different bytes is not the downloaded file:
+        // the hash comparison fetches it again.
+        std::fs::write(&path, b"hallo").unwrap();
+        assert!(!is_present(&fetch));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
