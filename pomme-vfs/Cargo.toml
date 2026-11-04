@@ -1,20 +1,11 @@
 [package]
 name = "pomme-vfs"
-description = "The files the client reads and writes: the OS's on native, memory and the browser's Cache on the web."
+description = "The files the client reads and writes: the OS's on native, memory and the page's caches on the web."
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "=0.2.129"
-wasm-bindgen-futures = "0.4"
+cache = { path = "../../../crates/cache" }
 wasm_sync = "0.1.2"
-web-sys = { version = "0.3", features = [
-    "Cache",
-    "CacheStorage",
-    "Request",
-    "Response",
-    "ResponseInit",
-] }

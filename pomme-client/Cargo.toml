@@ -160,6 +160,7 @@ gilrs = "0.11.2"
 # The browser has no OS randomness, clock or threads of its own: randomness
 # and time come from JavaScript.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+cache = { path = "../../../crates/cache" }
 getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom-03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 getrandom-04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }

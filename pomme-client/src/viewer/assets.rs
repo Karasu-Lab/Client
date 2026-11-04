@@ -9,9 +9,9 @@ use crate::dirs::DataDirs;
 use crate::resource_pack::prepare_location;
 
 #[cfg(target_arch = "wasm32")]
-pub const ASSETS_NAMESPACE: &str = "viewer-assets";
+pub use cache::VIEWER_ASSETS as ASSETS_NAMESPACE;
 #[cfg(target_arch = "wasm32")]
-const VERSIONS_NAMESPACE: &str = "viewer-versions";
+use cache::VIEWER_VERSIONS as VERSIONS_NAMESPACE;
 
 fn is_drawn(key: &str) -> bool {
     !key.starts_with("minecraft/sounds") && !key.starts_with("minecraft/records")
@@ -120,6 +120,17 @@ fn object_files(objects_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
+#[cfg(target_arch = "wasm32")]
+async fn restore_install(marker: &std::path::Path) -> Result<bool, String> {
+    pomme_vfs::browser::restore_paths(VERSIONS_NAMESPACE, &[marker.to_path_buf()]).await?;
+    let extracted = pomme_vfs::exists(marker);
+    if extracted {
+        pomme_vfs::browser::restore(VERSIONS_NAMESPACE).await?;
+    }
+    pomme_vfs::browser::restore(ASSETS_NAMESPACE).await?;
+    Ok(extracted)
+}
+
 pub async fn prepare(
     version: &str,
     endpoints: Endpoints,
@@ -145,10 +156,10 @@ pub async fn prepare_with<T: Transfer>(
 ) -> Result<ViewerAssets, String> {
     let data = DataDirs::resolve(version, None, None, None);
     #[cfg(target_arch = "wasm32")]
-    {
-        pomme_vfs::browser::restore(ASSETS_NAMESPACE).await?;
-        pomme_vfs::browser::restore(VERSIONS_NAMESPACE).await?;
-    }
+    let (index, marker) =
+        pomme_install::install_markers(&data.assets_dir, &data.versions_dir, version);
+    #[cfg(target_arch = "wasm32")]
+    let extracted = restore_install(&marker).await?;
     if !data.is_installed(version) {
         endpoints.keep_object.get_or_insert(is_drawn);
         #[cfg(target_arch = "wasm32")]
@@ -177,8 +188,6 @@ pub async fn prepare_with<T: Transfer>(
         .await?;
         #[cfg(target_arch = "wasm32")]
         {
-            let (index, marker) =
-                pomme_install::install_markers(&data.assets_dir, &data.versions_dir, version);
             let saving = |done: u32, total: u32| {
                 on_progress(Progress {
                     stage: Stage::Save,
@@ -189,6 +198,15 @@ pub async fn prepare_with<T: Transfer>(
                     file_total: 0,
                 })
             };
+            if !extracted {
+                pomme_vfs::browser::persist_dir_with(
+                    VERSIONS_NAMESPACE,
+                    &data.versions_dir,
+                    std::slice::from_ref(&marker),
+                    &saving,
+                )
+                .await?;
+            }
             if transfer.stores_externally() {
                 pomme_vfs::browser::persist_files(ASSETS_NAMESPACE, &[index], &saving).await?;
             } else {
@@ -200,13 +218,6 @@ pub async fn prepare_with<T: Transfer>(
                 )
                 .await?;
             }
-            pomme_vfs::browser::persist_dir_with(
-                VERSIONS_NAMESPACE,
-                &data.versions_dir,
-                &[marker],
-                &saving,
-            )
-            .await?;
         }
     }
     let asset_index = AssetIndex::load(&data.indexes_dir, &data.objects_dir, version);

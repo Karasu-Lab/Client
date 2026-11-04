@@ -2,7 +2,7 @@
 //!
 //! On native targets they are `std::fs`. The browser has no filesystem, so
 //! there they work on an in-memory tree ([`MemoryFs`]) that [`browser`] fills
-//! from, and writes through to, the browser's Cache storage.
+//! from, and writes through to, the caches the page keeps.
 
 use std::io;
 use std::path::{Path, PathBuf};
