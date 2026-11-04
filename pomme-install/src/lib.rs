@@ -16,6 +16,9 @@ pub mod bedrock;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod client;
 pub mod packs;
+mod transfer;
+
+pub use transfer::{HttpTransfer, Transfer, Verified};
 
 const VERSION_MANIFEST_URL: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
@@ -43,14 +46,34 @@ impl Default for Endpoints {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Stage {
+    #[default]
+    Info,
+    Assets,
+    Client,
+    Extract,
+    Save,
+}
+
+impl Stage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Assets => "assets",
+            Self::Client => "client",
+            Self::Extract => "extract",
+            Self::Save => "save",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
+    pub stage: Stage,
     pub done: u32,
     pub total: u32,
     pub status: String,
-    /// Bytes received of the one file the operation is currently
-    /// downloading, and that file's size. Both are zero while no file
-    /// download is in flight.
     pub file_done: u64,
     pub file_total: u64,
 }
@@ -180,23 +203,52 @@ pub async fn install_from(
     version: &str,
     on_progress: &(dyn Fn(Progress) + Send + Sync),
 ) -> Result<(), String> {
+    install_via(
+        &HttpTransfer::new(http.clone()),
+        endpoints,
+        assets_dir,
+        versions_dir,
+        version,
+        on_progress,
+    )
+    .await
+}
+
+fn parse_json<T: serde::de::DeserializeOwned>(url: &str, bytes: &[u8]) -> Result<T, String> {
+    serde_json::from_slice(bytes).map_err(|e| format!("{url}: {e}"))
+}
+
+pub async fn install_via<T: Transfer>(
+    transfer: &T,
+    endpoints: &Endpoints,
+    assets_dir: &Path,
+    versions_dir: &Path,
+    version: &str,
+    on_progress: &(dyn Fn(Progress) + Send + Sync),
+) -> Result<(), String> {
     let report = reporter(on_progress);
     report(0, 1, "Fetching version info...");
-    let manifest: VersionManifest = get_json(http, &endpoints.version_manifest).await?;
+    let manifest: VersionManifest = parse_json(
+        &endpoints.version_manifest,
+        &transfer.get_bytes(&endpoints.version_manifest).await?,
+    )?;
     let entry = manifest
         .versions
         .iter()
         .find(|v| v.id == version)
         .ok_or_else(|| format!("Version {version} not found"))?;
-    let version_json: VersionJson = get_json(http, &entry.url).await?;
+    let version_json: VersionJson = parse_json(&entry.url, &transfer.get_bytes(&entry.url).await?)?;
 
-    let index_bytes = fetch_verified(
-        http,
-        &version_json.asset_index.url,
-        &version_json.asset_index.sha1,
-        Hash::Sha1,
-    )
-    .await?;
+    let index_bytes = transfer
+        .fetch_verified(
+            &Verified {
+                url: &version_json.asset_index.url,
+                expected: &version_json.asset_index.sha1,
+                hash: Hash::Sha1,
+            },
+            &|_| {},
+        )
+        .await?;
     let index: AssetIndexJson =
         serde_json::from_slice(&index_bytes).map_err(|e| format!("Asset index: {e}"))?;
     let objects_dir = assets_dir.join("objects");
@@ -217,37 +269,43 @@ pub async fn install_from(
             hash: Hash::Sha1,
         })
         .collect();
-    download_all(http, objects, on_progress).await?;
+    transfer.download_all(objects, on_progress).await?;
     write_atomic(&index_path(assets_dir, version), &index_bytes).await?;
 
     let out = extracted_dir(versions_dir, version);
     if !pomme_vfs::exists(&extracted_marker(versions_dir, version)) {
         let client = &version_json.downloads.client;
-        let jar = fetch_verified_with_progress(
-            http,
-            &client.url,
-            &client.sha1,
-            Hash::Sha1,
-            &|received| {
-                on_progress(Progress {
-                    done: 0,
-                    total: 1,
-                    status: "Downloading the client jar...".to_owned(),
-                    file_done: received,
-                    file_total: client.size,
-                });
-            },
-        )
-        .await?;
+        let jar = transfer
+            .fetch_verified(
+                &Verified {
+                    url: &client.url,
+                    expected: &client.sha1,
+                    hash: Hash::Sha1,
+                },
+                &|received| {
+                    on_progress(Progress {
+                        stage: Stage::Client,
+                        done: 0,
+                        total: 1,
+                        status: "Downloading the client jar...".to_owned(),
+                        file_done: received,
+                        file_total: client.size,
+                    });
+                },
+            )
+            .await?;
         let mut part = out.as_os_str().to_owned();
         part.push(".part");
         let part = PathBuf::from(part);
         let extract_report = |done, total| {
-            report(
+            on_progress(Progress {
+                stage: Stage::Extract,
                 done,
                 total,
-                &format!("Extracting the client jar ({done}/{total})"),
-            )
+                status: format!("Extracting the client jar ({done}/{total})"),
+                file_done: 0,
+                file_total: 0,
+            })
         };
         blocking(|| {
             let _ = pomme_vfs::remove_dir_all(&part);
@@ -275,14 +333,14 @@ async fn sleep(duration: Duration) {
     gloo_timers::future::sleep(duration).await;
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum Hash {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hash {
     Sha1,
     GitBlob,
 }
 
 impl Hash {
-    fn of(self, bytes: &[u8]) -> String {
+    pub fn of(self, bytes: &[u8]) -> String {
         let mut sha1 = sha1_smol::Sha1::new();
         if let Self::GitBlob = self {
             sha1.update(format!("blob {}\0", bytes.len()).as_bytes());
@@ -297,6 +355,7 @@ fn reporter(
 ) -> impl Fn(u32, u32, &str) + Send + Sync + '_ {
     move |done, total, status| {
         on_progress(Progress {
+            stage: Stage::Info,
             done,
             total,
             status: status.to_owned(),
@@ -306,7 +365,8 @@ fn reporter(
     }
 }
 
-pub(crate) struct Fetch {
+#[derive(Clone, Debug)]
+pub struct Fetch {
     pub url: String,
     pub path: PathBuf,
     pub size: u64,
@@ -329,6 +389,10 @@ fn is_present(file: &Fetch) -> bool {
         Ok(bytes) => file.hash.of(&bytes) == file.expected,
         Err(_) => false,
     }
+}
+
+pub fn missing(files: Vec<Fetch>) -> Vec<Fetch> {
+    files.into_iter().filter(|file| !is_present(file)).collect()
 }
 
 /// The live state of a `download_all` run, shared by its download
@@ -383,7 +447,7 @@ pub(crate) async fn download_all(
     files: Vec<Fetch>,
     on_progress: &(dyn Fn(Progress) + Send + Sync),
 ) -> Result<(), String> {
-    let missing: Vec<Fetch> = files.into_iter().filter(|file| !is_present(file)).collect();
+    let missing = missing(files);
     let total_bytes = missing.iter().map(|file| file.size).sum::<u64>();
     let state = DownloadState::new(&missing);
     let last_report: Mutex<Option<Instant>> = Mutex::new(None);
@@ -398,6 +462,7 @@ pub(crate) async fn download_all(
         let done = state.bytes_done();
         let (file_done, file_total) = state.current_file();
         on_progress(Progress {
+            stage: Stage::Assets,
             done: as_u32(done),
             total: as_u32(total_bytes),
             status: format!(
@@ -492,15 +557,6 @@ async fn fetch_with_progress(
         on_bytes(bytes.len() as u64);
     }
     Ok(bytes)
-}
-
-async fn fetch_verified(
-    http: &reqwest::Client,
-    url: &str,
-    expected: &str,
-    hash: Hash,
-) -> Result<Vec<u8>, String> {
-    fetch_verified_with_progress(http, url, expected, hash, &|_| {}).await
 }
 
 /// Downloads `url` until the bytes hash to `expected`, reporting the

@@ -1,4 +1,6 @@
-pub use pomme_install::{Endpoints, Progress};
+pub use pomme_install::{
+    Endpoints, Fetch, Hash, HttpTransfer, Progress, Stage, Transfer, Verified,
+};
 use resourcepack::PackLocation;
 
 use super::ViewerDirs;
@@ -7,7 +9,7 @@ use crate::dirs::DataDirs;
 use crate::resource_pack::prepare_location;
 
 #[cfg(target_arch = "wasm32")]
-const ASSETS_NAMESPACE: &str = "viewer-assets";
+pub const ASSETS_NAMESPACE: &str = "viewer-assets";
 #[cfg(target_arch = "wasm32")]
 const VERSIONS_NAMESPACE: &str = "viewer-versions";
 
@@ -120,6 +122,23 @@ fn object_files(objects_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 pub async fn prepare(
     version: &str,
+    endpoints: Endpoints,
+    resource_pack_location: PackLocation,
+    on_progress: &(dyn Fn(Progress) + Send + Sync),
+) -> Result<ViewerAssets, String> {
+    prepare_with(
+        &HttpTransfer::default(),
+        version,
+        endpoints,
+        resource_pack_location,
+        on_progress,
+    )
+    .await
+}
+
+pub async fn prepare_with<T: Transfer>(
+    transfer: &T,
+    version: &str,
     mut endpoints: Endpoints,
     resource_pack_location: PackLocation,
     on_progress: &(dyn Fn(Progress) + Send + Sync),
@@ -133,18 +152,22 @@ pub async fn prepare(
     if !data.is_installed(version) {
         endpoints.keep_object.get_or_insert(is_drawn);
         #[cfg(target_arch = "wasm32")]
-        let snapshot = std::sync::Arc::new(ObjectSnapshot::new(data.objects_dir.clone()));
+        let snapshot = (!transfer.stores_externally())
+            .then(|| std::sync::Arc::new(ObjectSnapshot::new(data.objects_dir.clone())));
         #[cfg(target_arch = "wasm32")]
         let install_progress = {
             let snapshot = snapshot.clone();
             move |progress: Progress| {
-                snapshot.maybe_persist();
+                if let Some(snapshot) = &snapshot {
+                    snapshot.maybe_persist();
+                }
                 on_progress(progress);
             }
         };
         #[cfg(target_arch = "wasm32")]
         let on_progress = &install_progress;
-        pomme_install::install_with(
+        pomme_install::install_via(
+            transfer,
             &endpoints,
             &data.assets_dir,
             &data.versions_dir,
@@ -158,6 +181,7 @@ pub async fn prepare(
                 pomme_install::install_markers(&data.assets_dir, &data.versions_dir, version);
             let saving = |done: u32, total: u32| {
                 on_progress(Progress {
+                    stage: Stage::Save,
                     done,
                     total,
                     status: format!("Saving the assets ({done}/{total})"),
@@ -165,13 +189,17 @@ pub async fn prepare(
                     file_total: 0,
                 })
             };
-            pomme_vfs::browser::persist_dir_with(
-                ASSETS_NAMESPACE,
-                &data.assets_dir,
-                &[index],
-                &saving,
-            )
-            .await?;
+            if transfer.stores_externally() {
+                pomme_vfs::browser::persist_files(ASSETS_NAMESPACE, &[index], &saving).await?;
+            } else {
+                pomme_vfs::browser::persist_dir_with(
+                    ASSETS_NAMESPACE,
+                    &data.assets_dir,
+                    &[index],
+                    &saving,
+                )
+                .await?;
+            }
             pomme_vfs::browser::persist_dir_with(
                 VERSIONS_NAMESPACE,
                 &data.versions_dir,
