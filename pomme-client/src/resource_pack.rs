@@ -472,7 +472,7 @@ pub async fn prepare_location(
         }
         #[cfg(target_arch = "wasm32")]
         PackLocation::Url(base) => {
-            let cache = format!("packs:{base}");
+            let cache = cache::packs_namespace(base);
             match pomme_install::packs::sync_packs(base, &dir).await {
                 Ok(_) => pomme_vfs::browser::persist_dir(&cache, &dir)
                     .await
